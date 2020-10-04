@@ -1,0 +1,4 @@
+-rrequirements.txt
+
+pywin32>=223
+wmi==1.5.1

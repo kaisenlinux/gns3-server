@@ -1,0 +1,15 @@
+#!/bin/sh
+
+set -e
+
+if [ "$1" = "configure" ]; then
+
+	useradd --system --home /var/lib/gns3 --shell /usr/sbin/nologin gns3 || true
+	mkdir -p /var/lib/gns3 || true
+	chown -R gns3:gns3 /var/lib/gns3 || true
+
+fi
+
+#DEBHELPER#
+
+exit 0
