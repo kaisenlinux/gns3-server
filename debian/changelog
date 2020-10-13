@@ -1,3 +1,9 @@
+gns3-server (2.2.14-1kaisen3) kaisen-packages; urgency=medium
+
+  * Change typo on postrm script
+
+ -- Kevin Chevreuil - Kaisen <kaisen@kaisen-linux.org>  Tue, 13 Oct 2020 23:44:04 +0200
+
 gns3-server (2.2.14-1kaisen2) kaisen-packages; urgency=medium
 
   * Add python3:depends and remove old dependancies

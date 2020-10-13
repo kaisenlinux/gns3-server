@@ -2,7 +2,7 @@
 
 set -e
 
-if test "$1" = "purge"; then
+if [ "$1" = "purge" ]; then
 
 	deluser --quiet gns3 > /dev/null || true
 	rm -rf /var/lib/gns3 || true
