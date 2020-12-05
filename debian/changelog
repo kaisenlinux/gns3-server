@@ -1,3 +1,10 @@
+gns3-server (2.2.17-1kaisen1) kaisen-packages; urgency=medium
+
+  * Update at 2.2.17
+  * Update compat to 13
+
+ -- Kevin Chevreuil - Kaisen <kaisen@kaisen-linux.org>  Sat, 05 Dec 2020 02:54:49 +0200
+
 gns3-server (2.2.16-1kaisen1) kaisen-packages; urgency=medium
 
   * Update at 2.2.16
