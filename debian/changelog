@@ -1,3 +1,9 @@
+gns3-server (2.2.18-1kaisen1) kaisen-packages; urgency=medium
+
+  * Update at 2.2.18
+
+ -- Kevin Chevreuil - Kaisen <kaisen@kaisenlinux.org>  Wed, 03 Mar 2021 05:00:29 +0200
+
 gns3-server (2.2.17-1kaisen1) kaisen-packages; urgency=medium
 
   * Update at 2.2.17
