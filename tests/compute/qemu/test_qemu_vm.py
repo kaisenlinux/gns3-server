@@ -354,11 +354,12 @@ async def test_disk_options(vm, tmpdir, fake_qemu_img_binary):
     vm._hda_disk_image = str(tmpdir / "test.qcow2")
     open(vm._hda_disk_image, "w+").close()
 
-    with asyncio_patch("asyncio.create_subprocess_exec", return_value=MagicMock()) as process:
-        options = await vm._disk_options()
-        assert process.called
-        args, kwargs = process.call_args
-        assert args == (fake_qemu_img_binary, "create", "-o", "backing_file={}".format(vm._hda_disk_image), "-f", "qcow2", os.path.join(vm.working_dir, "hda_disk.qcow2"))
+    with asyncio_patch("gns3server.compute.qemu.qemu_vm.QemuVM._find_disk_file_format", return_value="qcow2"):
+        with asyncio_patch("asyncio.create_subprocess_exec", return_value=MagicMock()) as process:
+            options = await vm._disk_options()
+            assert process.called
+            args, kwargs = process.call_args
+            assert args == (fake_qemu_img_binary, "create", "-o", "backing_file={}".format(vm._hda_disk_image), "-F", "qcow2", "-f", "qcow2", os.path.join(vm.working_dir, "hda_disk.qcow2"))
 
     assert options == ['-drive', 'file=' + os.path.join(vm.working_dir, "hda_disk.qcow2") + ',if=ide,index=0,media=disk,id=drive0']
 
@@ -411,8 +412,9 @@ async def test_disk_options_multiple_disk(vm, tmpdir, fake_qemu_img_binary):
     open(vm._hdc_disk_image, "w+").close()
     open(vm._hdd_disk_image, "w+").close()
 
-    with asyncio_patch("asyncio.create_subprocess_exec", return_value=MagicMock()):
-        options = await vm._disk_options()
+    with asyncio_patch("gns3server.compute.qemu.qemu_vm.QemuVM._find_disk_file_format", return_value="qcow2"):
+        with asyncio_patch("asyncio.create_subprocess_exec", return_value=MagicMock()):
+            options = await vm._disk_options()
 
     assert options == [
         '-drive', 'file=' + os.path.join(vm.working_dir, "hda_disk.qcow2") + ',if=ide,index=0,media=disk,id=drive0',
@@ -818,21 +820,21 @@ def test_options(linux_platform, vm):
     assert vm.kvm is False
 
     vm.options = "-no-kvm"
-    assert vm.options == "-no-kvm"
+    assert vm.options == "-machine accel=tcg"
 
     vm.options = "-enable-kvm"
-    assert vm.options == "-enable-kvm"
+    assert vm.options == "-machine accel=kvm"
 
     vm.options = "-icount 12"
-    assert vm.options == "-no-kvm -icount 12"
+    assert vm.options == "-icount 12"
 
     vm.options = "-icount 12 -no-kvm"
-    assert vm.options == "-icount 12 -no-kvm"
+    assert vm.options == "-icount 12 -machine accel=tcg"
 
 
 def test_options_windows(windows_platform, vm):
     vm.options = "-no-kvm"
-    assert vm.options == ""
+    assert vm.options == "-machine accel=tcg"
 
     vm.options = "-enable-kvm"
     assert vm.options == ""
@@ -878,7 +880,7 @@ async def test_run_with_kvm_linux_options_no_kvm(linux_platform, vm):
 
     with patch("os.path.exists", return_value=True) as os_path:
         vm.manager.config.set("Qemu", "enable_kvm", True)
-        assert await vm._run_with_hardware_acceleration("qemu-system-x86_64", "-no-kvm") is False
+        assert await vm._run_with_hardware_acceleration("qemu-system-x86_64", "-machine accel=tcg") is False
 
 
 async def test_run_with_kvm_not_x86(linux_platform, vm):
