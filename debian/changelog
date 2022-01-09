@@ -1,3 +1,10 @@
+gns3-server (2.2.29-1kaisen) kaisen-packages; urgency=medium
+
+  * Update at 2.2.29
+  * Addd python3-setuptools as dependancy
+
+ -- Kevin Chevreuil - Kaisen <kaisen@kaisenlinux.org>  Sun, 09 Jan 2022 01:47:12 +0100
+
 gns3-server (2.2.27-1kaisen) kaisen-packages; urgency=medium
 
   * Update at 2.2.27
