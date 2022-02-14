@@ -1,7 +1,16 @@
+gns3-server (2.2.29-2kaisen) kaisen-packages; urgency=medium
+
+  * Update postinst and postrm script
+  * Add the version required of package dependancies
+  * Update dependancies required for gns3-server
+  * Remove dh_virtualenv as dependancy to build package
+
+ -- Kevin Chevreuil - Kaisen <kaisen@kaisenlinux.org>  Sun, 13 Feb 2022 23:46:23 +0100
+
 gns3-server (2.2.29-1kaisen) kaisen-packages; urgency=medium
 
   * Update at 2.2.29
-  * Addd python3-setuptools as dependancy
+  * Add python3-setuptools as dependancy
 
  -- Kevin Chevreuil - Kaisen <kaisen@kaisenlinux.org>  Sun, 09 Jan 2022 01:47:12 +0100
 
