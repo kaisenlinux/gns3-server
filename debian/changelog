@@ -1,3 +1,10 @@
+gns3-server (2.2.32-1kaisen) kaisen-packages; urgency=medium
+
+  * Import 2.2.32 version
+  * Remove quilt patch
+
+ -- Kevin Chevreuil - Kaisen <kaisen@kaisenlinux.org>  Fri, 06 May 2022 10:09:58 +0100
+
 gns3-server (2.2.31-1kaisen) kaisen-packages; urgency=medium
 
   * Import 2.2.31 version
