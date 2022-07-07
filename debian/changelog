@@ -1,3 +1,10 @@
+gns3-server (2.2.33.1-1kaisen) kaisen-packages; urgency=medium
+
+  * Import 2.2.33.1 version
+  * Update the python3-psutil version required for gns3-server
+
+ -- Kevin Chevreuil - Kaisen <kaisen@kaisenlinux.org>  Thu, 07 Jul 2022 21:50:47 +0100
+
 gns3-server (2.2.32-1kaisen) kaisen-packages; urgency=medium
 
   * Import 2.2.32 version

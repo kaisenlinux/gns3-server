@@ -314,7 +314,8 @@ class DockerVM(BaseNode):
 # DHCP config for eth{adapter}
 #auto eth{adapter}
 #iface eth{adapter} inet dhcp
-""".format(adapter=adapter))
+#\thostname {hostname}
+""".format(adapter=adapter, hostname=self._name))
         return path
 
     async def create(self):
@@ -334,7 +335,6 @@ class DockerVM(BaseNode):
 
         params = {
             "Hostname": self._name,
-            "Name": self._name,
             "Image": self._image,
             "NetworkDisabled": True,
             "Tty": True,
@@ -584,6 +584,7 @@ class DockerVM(BaseNode):
         if tigervnc_path:
             with open(os.path.join(self.working_dir, "vnc.log"), "w") as fd:
                 self._vnc_process = await asyncio.create_subprocess_exec(tigervnc_path,
+                                                                         "-extension", "MIT-SHM",
                                                                          "-geometry", self._console_resolution,
                                                                          "-depth", "16",
                                                                          "-interface", self._manager.port_manager.console_host,
@@ -595,8 +596,9 @@ class DockerVM(BaseNode):
         else:
             if restart is False:
                 self._xvfb_process = await asyncio.create_subprocess_exec("Xvfb",
-                                                                          "-nolisten",
-                                                                          "tcp", ":{}".format(self._display),
+                                                                          "-nolisten", "tcp",
+                                                                          "-extension", "MIT-SHM",
+                                                                          ":{}".format(self._display),
                                                                           "-screen", "0",
                                                                           self._console_resolution + "x16")
 
@@ -606,6 +608,7 @@ class DockerVM(BaseNode):
                                                                          "-forever",
                                                                          "-nopw",
                                                                          "-shared",
+                                                                         "-noshm",
                                                                          "-geometry", self._console_resolution,
                                                                          "-display", "WAIT:{}".format(self._display),
                                                                          "-rfbport", str(self.console),
@@ -683,7 +686,6 @@ class DockerVM(BaseNode):
         # resize the container TTY.
         await self._manager.query("POST", "containers/{}/resize?h={}&w={}".format(self._cid, rows, columns))
 
-
     async def _start_console(self):
         """
         Starts streaming the console via telnet
@@ -738,6 +740,14 @@ class DockerVM(BaseNode):
                 await ws.close()
                 break
         await self.stop()
+
+    async def reset_console(self):
+        """
+        Reset the console.
+        """
+
+        await self._clean_servers()
+        await self._start_console()
 
     async def is_running(self):
         """
