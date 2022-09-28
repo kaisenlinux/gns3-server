@@ -1,3 +1,10 @@
+gns3-server (2.2.34-1kaisen) kaisen-packages; urgency=medium
+
+  * Import 2.2.34 version
+  * Update the python3-sentry-sdk version required
+
+ -- Kevin Chevreuil - Kaisen <kaisen@kaisenlinux.org>  Sun, 25 Sep 2022 22:32:44 +0100
+
 gns3-server (2.2.33.1-1kaisen) kaisen-packages; urgency=medium
 
   * Import 2.2.33.1 version
