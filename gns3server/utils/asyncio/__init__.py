@@ -73,7 +73,7 @@ async def subprocess_check_output(*args, cwd=None, env=None, stderr=False):
         proc = await asyncio.create_subprocess_exec(*args, stderr=asyncio.subprocess.PIPE, cwd=cwd, env=env)
         output = await proc.stderr.read()
     else:
-        proc = await asyncio.create_subprocess_exec(*args, stdout=asyncio.subprocess.PIPE, cwd=cwd, env=env)
+        proc = await asyncio.create_subprocess_exec(*args, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL, cwd=cwd, env=env)
         output = await proc.stdout.read()
     if output is None:
         return ""
@@ -81,6 +81,7 @@ async def subprocess_check_output(*args, cwd=None, env=None, stderr=False):
     # it should happens only when user try to use another binary
     # and the code of VPCS, dynamips... Will detect it's not the correct binary
     return output.decode("utf-8", errors="ignore")
+
 
 async def wait_for_process_termination(process, timeout=10):
     """

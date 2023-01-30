@@ -1,5 +1,25 @@
 # Change Log
 
+## 2.2.37 25/01/2023
+
+* Fix link communication issues on Windows with uBridge
+* Fix StreamWriter doesn't have the wait_closed() method in Python3.6. Fixes #2170
+* Install built-in appliances when no previous version has been detected. Fixes #2168
+* Update documentation to install gns3-server. Fixes #2124
+* Give udhcpc executable right. Fixes #2159
+
+## 2.2.36 04/01/2023
+
+* Install web-ui v2.2.36
+* Add Trusted Platform Module (TPM) support for Qemu VMs
+* Require Dynamips 0.2.23 and bind Dynamips hypervisor on 127.0.0.1
+* Delete the built-in appliance directory before installing updated files
+* Use a stock BusyBox for the Docker integration
+* Overwrite built-in appliance files when starting a more recent version of the server
+* Fix reset console. Fixes #1619
+* Only use importlib_resources for Python <= 3.9. Fixes #2147
+* Support when the user field defined in Docker container is an ID. Fixes #2134
+
 ## 2.2.35.1 10/11/2022
 
 * Re-release Web-Ui v2.2.35

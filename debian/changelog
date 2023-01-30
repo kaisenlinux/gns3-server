@@ -1,3 +1,15 @@
+gns3-server (2.2.37-1kaisen) kaisen-packages; urgency=medium
+
+  * Import the 2.2.37 version
+  * Update the postrm script
+  * Update the postinst script to add users automatically in the gns3 group
+  * Update the systemd service unit file to add the --config param and
+    enforce the creation of required folders
+  * Install by default the conf/gns3_server.conf
+  * Add the patch named applicance-path-in-var-lib for the conf/gns3_server.conf
+
+ -- Kevin Chevreuil - Kaisen <kaisen@kaisenlinux.org>  Mon, 30 Jan 2022 20:21:05 +0100
+
 gns3-server (2.2.35.1-1kaisen) kaisen-packages; urgency=medium
 
   * Import the 2.2.35.1 version

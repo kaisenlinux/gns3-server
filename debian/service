@@ -8,10 +8,11 @@ Type=forking
 User=gns3
 Group=gns3
 PermissionsStartOnly=true
-ExecStartPre=/bin/mkdir -p /var/log/gns3 /var/run/gns3
-ExecStartPre=/bin/chown -R gns3:gns3 /var/log/gns3 /var/run/gns3
-ExecStart=/usr/bin/gns3server --log /var/log/gns3/gns3.log \
- --pid /var/run/gns3/gns3.pid --daemon
+ExecStartPre=/bin/mkdir -p /var/log/gns3 /var/run/gns3 /var/lib/gns3
+ExecStartPre=/bin/chown -R gns3:gns3 /var/log/gns3 /var/run/gns3 /var/lib/gns3
+ExecStartPre=/bin/chmod 0775 /var/log/gns3 /var/run/gns3 /var/lib/gns3
+ExecStartPre=/bin/chmod 0660 /var/lib/gns3/gns3_server.conf
+ExecStart=/usr/bin/gns3server --log /var/log/gns3/gns3.log --pid /var/run/gns3/gns3.pid --config /var/lib/gns3/gns3_server.conf --daemon
 ExecReload=/bin/kill -s HUP $MAINPID
 Restart=on-abort
 PIDFile=/var/run/gns3/gns3.pid

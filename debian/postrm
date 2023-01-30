@@ -4,7 +4,8 @@ set -e
 
 if [ "$1" = "purge" ]; then
 	userdel --remove --force gns3 || true
-	rm -rf /var/lib/gns3
+	groupdel --force gns3 || true
+	rm -rf /var/lib/gns3 /var/log/gns3 /var/run/gns3
 fi
 
 #DEBHELPER#
