@@ -3,8 +3,8 @@
 set -e
 
 if [ "$1" = "purge" ]; then
-	userdel --remove --force gns3 || true
-	groupdel --force gns3 || true
+	userdel --remove --force gns3 2> /dev/null || true
+	groupdel --force gns3 2> /dev/null || true
 	rm -rf /var/lib/gns3 /var/log/gns3 /var/run/gns3
 fi
 

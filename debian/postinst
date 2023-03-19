@@ -3,7 +3,7 @@
 set -e
 
 if [ "$1" = "configure" ]; then
-	useradd --system --home /var/lib/gns3 --shell /usr/sbin/nologin gns3 || true
+	useradd --system --home /var/lib/gns3 --shell /usr/sbin/nologin gns3 2> /dev/null || true
 	chown -R gns3:gns3 /var/lib/gns3 || true
 	chmod 0775 /var/lib/gns3 || true
 	chmod 0660 /var/lib/gns3/gns3_server.conf || true
