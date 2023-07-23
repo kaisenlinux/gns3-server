@@ -1,3 +1,9 @@
+gns3-server (2.2.41-1kaisen) kaisen-packages; urgency=medium
+
+  * Import the 2.2.41 version
+
+ -- Kevin Chevreuil - Kaisen <kaisen@kaisenlinux.org>  Sat, 22 Jul 2023 22:40:22 +0100
+
 gns3-server (2.2.39-1kaisen) kaisen-packages; urgency=medium
 
   * Import the 2.2.39 version
