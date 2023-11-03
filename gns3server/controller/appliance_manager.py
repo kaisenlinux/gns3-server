@@ -15,13 +15,14 @@
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-import sys
 import os
 import json
 import uuid
 import asyncio
 import aiohttp
 import shutil
+import platformdirs
+
 
 try:
     import importlib_resources
@@ -81,13 +82,13 @@ class ApplianceManager:
         os.makedirs(appliances_path, exist_ok=True)
         return appliances_path
 
-    def _builtin_appliances_path(self, delete_first=False):
+    def builtin_appliances_path(self, delete_first=False):
         """
         Get the built-in appliance storage directory
         """
 
-        config = Config.instance()
-        appliances_dir = os.path.join(config.config_dir, "appliances")
+        appname = vendor = "GNS3"
+        appliances_dir = os.path.join(platformdirs.user_data_dir(appname, vendor, roaming=True), "appliances")
         if delete_first:
             shutil.rmtree(appliances_dir, ignore_errors=True)
         os.makedirs(appliances_dir, exist_ok=True)
@@ -98,7 +99,7 @@ class ApplianceManager:
         At startup we copy the built-in appliances files.
         """
 
-        dst_path = self._builtin_appliances_path(delete_first=True)
+        dst_path = self.builtin_appliances_path(delete_first=True)
         log.info(f"Installing built-in appliances in '{dst_path}'")
         from . import Controller
         try:
@@ -112,7 +113,7 @@ class ApplianceManager:
         """
 
         self._appliances = {}
-        for directory, builtin in ((self._builtin_appliances_path(), True,), (self._custom_appliances_path(), False,)):
+        for directory, builtin in ((self.builtin_appliances_path(), True,), (self._custom_appliances_path(), False,)):
             if directory and os.path.isdir(directory):
                 for file in os.listdir(directory):
                     if not file.endswith('.gns3a') and not file.endswith('.gns3appliance'):
@@ -200,7 +201,10 @@ class ApplianceManager:
                 log.info("Checking if appliances are up-to-date (ETag {})".format(self._appliances_etag))
                 headers["If-None-Match"] = self._appliances_etag
             async with aiohttp.ClientSession() as session:
-                async with session.get('https://api.github.com/repos/GNS3/gns3-registry/contents/appliances', headers=headers) as response:
+                async with session.get(
+                        'https://api.github.com/repos/GNS3/gns3-registry/contents/appliances',
+                        headers=headers
+                ) as response:
                     if response.status == 304:
                         log.info("Appliances are already up-to-date (ETag {})".format(self._appliances_etag))
                         return
@@ -212,7 +216,7 @@ class ApplianceManager:
                         from . import Controller
                         Controller.instance().save()
                     json_data = await response.json()
-                appliances_dir = self._builtin_appliances_path()
+                appliances_dir = self.builtin_appliances_path()
                 downloaded_appliance_files = []
                 for appliance in json_data:
                     if appliance["type"] == "file":
