@@ -232,7 +232,8 @@ class Route(object):
                     response.set_status(408)
                     response.json({"message": "Request canceled", "status": 408})
                     raise  # must raise to let aiohttp know the connection has been closed
-                except (ConnectionResetError, aiohttp.ClientError):
+                except aiohttp.ClientError:
+                    log.warning("Client error")
                     response = Response(request=request, route=route)
                     response.set_status(408)
                     response.json({"message": "Client error", "status": 408})

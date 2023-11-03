@@ -17,7 +17,6 @@
 
 import aiohttp
 import asyncio
-import ipaddress
 
 from gns3server.web.route import Route
 from gns3server.controller import Controller
@@ -478,16 +477,7 @@ class NodeHandler:
         await ws.prepare(request)
         request.app['websockets'].add(ws)
 
-        compute_host = compute.host
-        try:
-            # handle IPv6 address
-            ip = ipaddress.ip_address(compute_host)
-            if isinstance(ip, ipaddress.IPv6Address):
-                compute_host = '[' + compute_host + ']'
-        except ValueError:
-            pass
-
-        ws_console_compute_url = "ws://{compute_host}:{compute_port}/v2/compute/projects/{project_id}/{node_type}/nodes/{node_id}/console/ws".format(compute_host=compute_host,
+        ws_console_compute_url = "ws://{compute_host}:{compute_port}/v2/compute/projects/{project_id}/{node_type}/nodes/{node_id}/console/ws".format(compute_host=compute.host,
                                                                                                                                                      compute_port=compute.port,
                                                                                                                                                      project_id=project.id,
                                                                                                                                                      node_type=node.node_type,
