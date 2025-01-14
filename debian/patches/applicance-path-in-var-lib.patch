@@ -1,0 +1,65 @@
+Author: Kevin Chevreuil - Kaisen <kaisen@kaisenlinux.org>
+
+--- gns3-server-3.0.2.orig/gns3server/config_samples/gns3_server.conf
++++ gns3-server-3.0.2/gns3server/config_samples/gns3_server.conf
+@@ -27,35 +27,35 @@ host = 0.0.0.0
+ port = 3080
+ 
+ ; Secrets directory
+-secrets_dir = /home/gns3/.config/GNS3/secrets
++secrets_dir = /var/lib/gns3/.config/GNS3/secrets
+ 
+ ; Options to enable SSL encryption
+ enable_ssl = False
+-certfile = /home/gns3/.config/GNS3/ssl/server.cert
+-certkey = /home/gns3/.config/GNS3/ssl/server.key
++certfile = /var/lib/gns3/.config/GNS3/ssl/server.cert
++certkey = /var/lib/gns3/.config/GNS3/ssl/server.key
+ 
+ ; Path where binary images are stored
+-images_path = /home/gns3/GNS3/images
++images_path = /var/lib/gns3/GNS3/images
+ 
+ ; Additional paths to look for images
+ additional_images_paths = /opt/images;/mnt/disk1/images
+ 
+ ; Path where user projects are stored
+-projects_path = /home/gns3/GNS3/projects
++projects_path = /var/lib/gns3/GNS3/projects
+ 
+ ; Path where custom user appliances are stored
+-appliances_path = /home/gns3/GNS3/appliances
++appliances_path = /var/lib/gns3/GNS3/appliances
+ 
+ ; Path where custom user symbols are stored
+-symbols_path = /home/gns3/GNS3/symbols
++symbols_path = /var/lib/gns3/GNS3/symbols
+ 
+ ; Path where custom configs are stored
+-configs_path = /home/gns3/GNS3/configs
++configs_path = /var/lib/gns3/GNS3/configs
+ 
+ ; Path where files like built-in appliances and Docker resources are stored
+ ; The default path is the local user data directory
+ ; (Linux: "~/.local/share/GNS3", macOS: "~/Library/Application Support/GNS3", Windows: "%APPDATA%\GNS3")
+-; resources_path = /home/gns3/GNS3/resources
++; resources_path = /var/lib/gns3/GNS3/resources
+ 
+ ; Default symbol theme
+ ; Currently available themes are "Classic", Affinity-square-blue", "Affinity-square-red"
+@@ -128,7 +128,7 @@ ghost_ios_support = True
+ 
+ [IOU]
+ ; Path of your .iourc file. If not provided, the file is searched in $HOME/.iourc
+-iourc_path = /home/gns3/.iourc
++iourc_path = /var/lib/gns3/.iourc
+ ; Validate if the iourc license file is correct. If you turn this off and your licence is invalid IOU will not start and no errors will be shown.
+ license_check = True
+ 
+@@ -157,4 +157,4 @@ enable_hardware_acceleration = True
+ ; Require hardware acceleration in order to start VMs
+ require_hardware_acceleration = False
+ ; Allow unsafe additional command line options
+-allow_unsafe_options = False
+\ No newline at end of file
++allow_unsafe_options = False

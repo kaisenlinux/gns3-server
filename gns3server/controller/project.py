@@ -15,6 +15,7 @@
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
+import sys
 import re
 import os
 import json
@@ -23,10 +24,10 @@ import copy
 import shutil
 import time
 import asyncio
-import aiohttp
 import aiofiles
 import tempfile
 import zipfile
+import pathlib
 
 from uuid import UUID, uuid4
 
@@ -42,10 +43,13 @@ from ..utils.application_id import get_next_application_id
 from ..utils.asyncio.pool import Pool
 from ..utils.asyncio import locking
 from ..utils.asyncio import aiozipstream
+from ..utils.asyncio import wait_run_in_executor
 from .export_project import export_project
-from .import_project import import_project
+from .import_project import import_project, _move_node_file
+from .controller_error import ControllerError, ControllerForbiddenError, ControllerNotFoundError
 
 import logging
+
 log = logging.getLogger(__name__)
 
 
@@ -56,8 +60,9 @@ def open_required(func):
 
     def wrapper(self, *args, **kwargs):
         if self._status == "closed":
-            raise aiohttp.web.HTTPForbidden(text="The project is not opened")
+            raise ControllerForbiddenError("The project is not opened")
         return func(self, *args, **kwargs)
+
     return wrapper
 
 
@@ -70,10 +75,29 @@ class Project:
     :param status: Status of the project (opened / closed)
     """
 
-    def __init__(self, name=None, project_id=None, path=None, controller=None, status="opened",
-                 filename=None, auto_start=False, auto_open=False, auto_close=True,
-                 scene_height=1000, scene_width=2000, zoom=100, show_layers=False, snap_to_grid=False, show_grid=False,
-                 grid_size=75, drawing_grid_size=25, show_interface_labels=False, variables=None, supplier=None):
+    def __init__(
+        self,
+        name=None,
+        project_id=None,
+        path=None,
+        controller=None,
+        status="opened",
+        filename=None,
+        auto_start=False,
+        auto_open=False,
+        auto_close=True,
+        scene_height=1000,
+        scene_width=2000,
+        zoom=100,
+        show_layers=False,
+        snap_to_grid=False,
+        show_grid=False,
+        grid_size=75,
+        drawing_grid_size=25,
+        show_interface_labels=False,
+        variables=None,
+        supplier=None,
+    ):
 
         self._controller = controller
         assert name is not None
@@ -100,7 +124,9 @@ class Project:
         # Disallow overwrite of existing project
         if project_id is None and path is not None:
             if os.path.exists(path):
-                raise aiohttp.web.HTTPForbidden(text="The path {} already exist.".format(path))
+                raise ControllerForbiddenError(f"The path {path} already exists")
+            else:
+                raise ControllerForbiddenError("Providing a path to create a new project is deprecated.")
 
         if project_id is None:
             self._id = str(uuid4())
@@ -108,7 +134,7 @@ class Project:
             try:
                 UUID(project_id, version=4)
             except ValueError:
-                raise aiohttp.web.HTTPBadRequest(text="{} is not a valid UUID".format(project_id))
+                raise ControllerError(f"{project_id} is not a valid UUID")
             self._id = project_id
 
         if path is None:
@@ -128,9 +154,8 @@ class Project:
             self.dump()
 
         self._iou_id_lock = asyncio.Lock()
-
-        log.debug('Project "{name}" [{id}] loaded'.format(name=self.name, id=self._id))
-        self.emit_controller_notification("project.created", self.__json__())
+        log.debug(f'Project "{self.name}" [{self._id}] loaded')
+        self.emit_controller_notification("project.created", self.asdict())
 
     def emit_notification(self, action, event):
         """
@@ -158,23 +183,19 @@ class Project:
         :param kwargs: Project properties
         """
 
-        old_json = self.__json__()
+        old_json = self.asdict()
 
         for prop in kwargs:
             setattr(self, prop, kwargs[prop])
 
         # We send notif only if object has changed
-        if old_json != self.__json__():
-            self.emit_controller_notification("project.updated", self.__json__())
+        if old_json != self.asdict():
+            self.emit_controller_notification("project.updated", self.asdict())
             self.dump()
 
             # update on computes
             for compute in list(self._project_created_on_compute):
-                await compute.put(
-                    "/projects/{}".format(self._id), {
-                        "variables": self.variables
-                    }
-                )
+                await compute.put(f"/projects/{self._id}", {"variables": self.variables})
 
     def reset(self):
         """
@@ -192,7 +213,11 @@ class Project:
         if os.path.exists(snapshot_dir):
             for snap in os.listdir(snapshot_dir):
                 if snap.endswith(".gns3project"):
-                    snapshot = Snapshot(self, filename=snap)
+                    try:
+                        snapshot = Snapshot(self, filename=snap)
+                    except ValueError:
+                        log.error("Invalid snapshot file: {}".format(snap))
+                        continue
                     self._snapshots[snapshot.id] = snapshot
 
         # Create the project on demand on the compute node
@@ -416,15 +441,14 @@ class Project:
         try:
             os.makedirs(path, exist_ok=True)
         except OSError as e:
-            raise aiohttp.web.HTTPInternalServerError(text="Could not create project directory: {}".format(e))
+            raise ControllerError(f"Could not create project directory: {e}")
 
         if '"' in path:
-            raise aiohttp.web.HTTPForbidden(text="You are not allowed to use \" in the project directory path. Not supported by Dynamips.")
+            raise ControllerForbiddenError(
+                'You are not allowed to use " in the project directory path. Not supported by Dynamips.'
+            )
 
         self._path = path
-
-    def _config(self):
-        return Config.instance().get_section_config("Server")
 
     @property
     def captures_directory(self):
@@ -474,19 +498,19 @@ class Project:
 
         if base_name is None:
             return None
-        base_name = re.sub(r"[ ]", "", base_name)
+        base_name = re.sub(r"[ ]", "", base_name)  # remove spaces in node name
         if base_name in self._allocated_node_names:
             base_name = re.sub(r"[0-9]+$", "{0}", base_name)
 
-        if '{0}' in base_name or '{id}' in base_name:
+        if "{0}" in base_name or "{id}" in base_name:
             # base name is a template, replace {0} or {id} by an unique identifier
             for number in range(1, 1000000):
                 try:
                     name = base_name.format(number, id=number, name="Node")
                 except KeyError as e:
-                    raise aiohttp.web.HTTPConflict(text="{" + e.args[0] + "} is not a valid replacement string in the node name")
+                    raise ControllerError("{" + e.args[0] + "} is not a valid replacement string in the node name")
                 except (ValueError, IndexError) as e:
-                    raise aiohttp.web.HTTPConflict(text="{} is not a valid replacement string in the node name".format(base_name))
+                    raise ControllerError(f"{base_name} is not a valid replacement string in the node name")
                 if name not in self._allocated_node_names:
                     self._allocated_node_names.add(name)
                     return name
@@ -500,7 +524,7 @@ class Project:
                 if name not in self._allocated_node_names:
                     self._allocated_node_names.add(name)
                     return name
-        raise aiohttp.web.HTTPConflict(text="A node name could not be allocated (node limit reached?)")
+        raise ControllerError("A node name could not be allocated (node limit reached?)")
 
     def update_node_name(self, node, new_name):
 
@@ -510,25 +534,22 @@ class Project:
         return new_name
 
     @open_required
-    async def add_node_from_template(self, template_id, x=0, y=0, name=None, compute_id=None):
+    async def add_node_from_template(self, template, x=0, y=0, name=None, compute_id=None):
         """
         Create a node from a template.
         """
-        try:
-            template = copy.deepcopy(self.controller.template_manager.templates[template_id].settings)
-        except KeyError:
-            msg = "Template {} doesn't exist".format(template_id)
-            log.error(msg)
-            raise aiohttp.web.HTTPNotFound(text=msg)
+
         template["x"] = x
         template["y"] = y
         node_type = template.pop("template_type")
-        if template.pop("builtin", False) is True:
-            # compute_id is selected by clients for builtin templates
+
+        if compute_id:
+            # use a custom compute_id
             compute = self.controller.get_compute(compute_id)
         else:
-            compute = self.controller.get_compute(template.pop("compute_id", compute_id))
+            compute = self.controller.get_compute(template.pop("compute_id"))
         template_name = template.pop("name")
+        log.info(f'Creating node from template "{template_name}" on compute "{compute.name}" [{compute.id}]')
         default_name_format = template.pop("default_name_format", "{name}-{0}")
         if name is None:
             name = default_name_format.replace("{name}", template_name)
@@ -542,16 +563,9 @@ class Project:
         if compute not in self._project_created_on_compute:
             # For a local server we send the project path
             if compute.id == "local":
-                data = {
-                    "name": self._name,
-                    "project_id": self._id,
-                    "path": self._path
-                }
+                data = {"name": self._name, "project_id": self._id, "path": self._path}
             else:
-                data = {
-                    "name": self._name,
-                    "project_id": self._id
-                }
+                data = {"name": self._name, "project_id": self._id}
 
             if self._variables:
                 data["variables"] = self._variables
@@ -581,19 +595,21 @@ class Project:
 
         if node_type == "iou":
             async with self._iou_id_lock:
-                # wait for a IOU node to be completely created before adding a new one
+                # wait for an IOU node to be completely created before adding a new one
                 # this is important otherwise we allocate the same application ID (used
                 # to generate MAC addresses) when creating multiple IOU node at the same time
                 if "properties" in kwargs.keys():
                     # allocate a new application id for nodes loaded from the project
-                    kwargs.get("properties")["application_id"] = get_next_application_id(self._controller.projects, self._computes)
+                    kwargs.get("properties")["application_id"] = get_next_application_id(
+                        self._controller.projects, self._computes
+                    )
                 elif "application_id" not in kwargs.keys() and not kwargs.get("properties"):
                     # allocate a new application id for nodes added to the project
                     kwargs["application_id"] = get_next_application_id(self._controller.projects, self._computes)
                 node = await self._create_node(compute, name, node_id, node_type, **kwargs)
         else:
             node = await self._create_node(compute, name, node_id, node_type, **kwargs)
-        self.emit_notification("node.created", node.__json__())
+        self.emit_notification("node.created", node.asdict())
         if dump:
             self.dump()
         return node
@@ -614,7 +630,7 @@ class Project:
     async def delete_node(self, node_id):
         node = self.get_node(node_id)
         if node.locked:
-            raise aiohttp.web.HTTPConflict(text="Node {} cannot be deleted because it is locked".format(node.name))
+            raise ControllerError(f"Node {node.name} cannot be deleted because it is locked")
         await self.__delete_node_links(node)
         self.remove_allocated_node_name(node.name)
         del self._nodes[node.id]
@@ -622,7 +638,7 @@ class Project:
         # refresh the compute IDs list
         self._computes = [n.compute.id for n in self.nodes.values()]
         self.dump()
-        self.emit_notification("node.deleted", node.__json__())
+        self.emit_notification("node.deleted", node.asdict())
 
     @open_required
     def get_node(self, node_id):
@@ -632,12 +648,12 @@ class Project:
         try:
             return self._nodes[node_id]
         except KeyError:
-            raise aiohttp.web.HTTPNotFound(text="Node ID {} doesn't exist".format(node_id))
+            raise ControllerNotFoundError(f"Node ID {node_id} doesn't exist")
 
     def _get_closed_data(self, section, id_key):
         """
         Get the data for a project from the .gns3 when
-        the project is close
+        the project is closed
 
         :param section: The section name in the .gns3
         :param id_key: The key for the element unique id
@@ -645,10 +661,10 @@ class Project:
 
         try:
             path = self._topology_file()
-            with open(path, "r") as f:
+            with open(path) as f:
                 topology = json.load(f)
         except OSError as e:
-            raise aiohttp.web.HTTPInternalServerError(text="Could not load topology: {}".format(e))
+            raise ControllerError(f"Could not load topology: {e}")
 
         try:
             data = {}
@@ -656,7 +672,7 @@ class Project:
                 data[elem[id_key]] = elem
             return data
         except KeyError:
-            raise aiohttp.web.HTTPNotFound(text="Section {} not found in the topology".format(section))
+            raise ControllerNotFoundError(f"Section {section} not found in the topology")
 
     @property
     def nodes(self):
@@ -687,7 +703,7 @@ class Project:
         if drawing_id not in self._drawings:
             drawing = Drawing(self, drawing_id=drawing_id, **kwargs)
             self._drawings[drawing.id] = drawing
-            self.emit_notification("drawing.created", drawing.__json__())
+            self.emit_notification("drawing.created", drawing.asdict())
             if dump:
                 self.dump()
             return drawing
@@ -701,16 +717,16 @@ class Project:
         try:
             return self._drawings[drawing_id]
         except KeyError:
-            raise aiohttp.web.HTTPNotFound(text="Drawing ID {} doesn't exist".format(drawing_id))
+            raise ControllerNotFoundError(f"Drawing ID {drawing_id} doesn't exist")
 
     @open_required
     async def delete_drawing(self, drawing_id):
         drawing = self.get_drawing(drawing_id)
         if drawing.locked:
-            raise aiohttp.web.HTTPConflict(text="Drawing ID {} cannot be deleted because it is locked".format(drawing_id))
+            raise ControllerError(f"Drawing ID {drawing_id} cannot be deleted because it is locked")
         del self._drawings[drawing.id]
         self.dump()
-        self.emit_notification("drawing.deleted", drawing.__json__())
+        self.emit_notification("drawing.deleted", drawing.asdict())
 
     @open_required
     async def add_link(self, link_id=None, dump=True):
@@ -737,7 +753,7 @@ class Project:
             if force_delete is False:
                 raise
         self.dump()
-        self.emit_notification("link.deleted", link.__json__())
+        self.emit_notification("link.deleted", link.asdict())
 
     @open_required
     def get_link(self, link_id):
@@ -747,7 +763,7 @@ class Project:
         try:
             return self._links[link_id]
         except KeyError:
-            raise aiohttp.web.HTTPNotFound(text="Link ID {} doesn't exist".format(link_id))
+            raise ControllerNotFoundError(f"Link ID {link_id} doesn't exist")
 
     @property
     def links(self):
@@ -773,7 +789,7 @@ class Project:
         try:
             return self._snapshots[snapshot_id]
         except KeyError:
-            raise aiohttp.web.HTTPNotFound(text="Snapshot ID {} doesn't exist".format(snapshot_id))
+            raise ControllerNotFoundError(f"Snapshot ID {snapshot_id} doesn't exist")
 
     @open_required
     async def snapshot(self, name):
@@ -784,7 +800,7 @@ class Project:
         """
 
         if name in [snap.name for snap in self._snapshots.values()]:
-            raise aiohttp.web.HTTPConflict(text="The snapshot name {} already exists".format(name))
+            raise ControllerError(f"The snapshot name {name} already exists")
         snapshot = Snapshot(self, name=name)
         await snapshot.create()
         self._snapshots[snapshot.id] = snapshot
@@ -801,20 +817,20 @@ class Project:
         if self._status == "closed" or self._closing:
             return
         if self._loading:
-            log.warning("Closing project '{}' ignored because it is being loaded".format(self.name))
+            log.warning(f"Closing project '{self.name}' ignored because it is being loaded")
             return
         self._closing = True
         await self.stop_all()
         for compute in list(self._project_created_on_compute):
             try:
-                await compute.post("/projects/{}/close".format(self._id), dont_connect=True)
+                await compute.post(f"/projects/{self._id}/close", dont_connect=True)
             # We don't care if a compute is down at this step
-            except (ComputeError, aiohttp.web.HTTPError, aiohttp.ClientError, TimeoutError):
+            except (ComputeError, ControllerError, TimeoutError):
                 pass
         self._clean_pictures()
         self._status = "closed"
         if not ignore_notification:
-            self.emit_controller_notification("project.closed", self.__json__())
+            self.emit_controller_notification("project.closed", self.asdict())
 
         self.reset()
         self._closing = False
@@ -840,36 +856,38 @@ class Project:
             # don't remove supplier's logo
             if self.supplier:
                 try:
-                    logo = self.supplier['logo']
+                    logo = self.supplier["logo"]
                     pictures.remove(logo)
                 except KeyError:
                     pass
 
             for pic_filename in pictures:
                 path = os.path.join(self.pictures_directory, pic_filename)
-                log.info("Deleting unused picture '{}'".format(path))
+                log.info(f"Deleting unused picture '{path}'")
                 os.remove(path)
         except OSError as e:
-            log.warning("Could not delete unused pictures: {}".format(e))
+            log.warning(f"Could not delete unused pictures: {e}")
 
     async def delete(self):
 
         if self._status != "opened":
             try:
                 await self.open()
-            except aiohttp.web.HTTPConflict as e:
+            except ControllerError as e:
                 # ignore missing images or other conflicts when deleting a project
-                log.warning("Conflict while deleting project: {}".format(e.text))
+                log.warning(f"Conflict while deleting project: {e}")
         await self.delete_on_computes()
         await self.close()
         try:
             project_directory = get_default_project_directory()
             if not os.path.commonprefix([project_directory, self.path]) == project_directory:
-                raise aiohttp.web.HTTPConflict(text="Project '{}' cannot be deleted because it is not in the default project directory: '{}'".format(self._name, project_directory))
+                raise ControllerError(
+                    f"Project '{self._name}' cannot be deleted because it is not in the default project directory: '{project_directory}'"
+                )
             shutil.rmtree(self.path)
         except OSError as e:
-            raise aiohttp.web.HTTPConflict(text="Cannot delete project directory {}: {}".format(self.path, str(e)))
-        self.emit_controller_notification("project.deleted", self.__json__())
+            raise ControllerError(f"Cannot delete project directory {self.path}: {str(e)}")
+        self.emit_controller_notification("project.deleted", self.asdict())
 
     async def delete_on_computes(self):
         """
@@ -877,7 +895,7 @@ class Project:
         """
         for compute in list(self._project_created_on_compute):
             if compute.id != "local":
-                await compute.delete("/projects/{}".format(self._id))
+                await compute.delete(f"/projects/{self._id}")
                 self._project_created_on_compute.remove(compute)
 
     @classmethod
@@ -887,13 +905,13 @@ class Project:
         depending of the operating system
         """
 
-        server_config = Config.instance().get_section_config("Server")
-        path = os.path.expanduser(server_config.get("projects_path", "~/GNS3/projects"))
+        server_config = Config.instance().settings.Server
+        path = os.path.expanduser(server_config.projects_path)
         path = os.path.normpath(path)
         try:
             os.makedirs(path, exist_ok=True)
         except OSError as e:
-            raise aiohttp.web.HTTPInternalServerError(text="Could not create project directory: {}".format(e))
+            raise ControllerError(f"Could not create project directory: {e}")
         return path
 
     def _topology_file(self):
@@ -906,7 +924,7 @@ class Project:
         """
 
         if self._closing is True:
-            raise aiohttp.web.HTTPConflict(text="Project is closing, please try again in a few seconds...")
+            raise ControllerError("Project is closing, please try again in a few seconds...")
 
         if self._status == "opened":
             return
@@ -926,7 +944,7 @@ class Project:
         try:
             project_data = load_topology(path)
 
-            #load meta of project
+            # load meta of project
             keys_to_load = [
                 "auto_start",
                 "auto_close",
@@ -939,7 +957,7 @@ class Project:
                 "show_grid",
                 "grid_size",
                 "drawing_grid_size",
-                "show_interface_labels"
+                "show_interface_labels",
             ]
 
             for key in keys_to_load:
@@ -964,7 +982,7 @@ class Project:
                 node_id = node.pop("node_id", str(uuid.uuid4()))
                 await self.add_node(compute, name, node_id, dump=False, **node)
             for link_data in topology.get("links", []):
-                if 'link_id' not in link_data.keys():
+                if "link_id" not in link_data.keys():
                     # skip the link
                     continue
                 link = await self.add_link(link_id=link_data["link_id"])
@@ -976,12 +994,26 @@ class Project:
                     node = self.get_node(node_link["node_id"])
                     port = node.get_port(node_link["adapter_number"], node_link["port_number"])
                     if port is None:
-                        log.warning("Port {}/{} for {} not found".format(node_link["adapter_number"], node_link["port_number"], node.name))
+                        log.warning(
+                            "Port {}/{} for {} not found".format(
+                                node_link["adapter_number"], node_link["port_number"], node.name
+                            )
+                        )
                         continue
                     if port.link is not None:
-                        log.warning("Port {}/{} is already connected to link ID {}".format(node_link["adapter_number"], node_link["port_number"], port.link.id))
+                        log.warning(
+                            "Port {}/{} is already connected to link ID {}".format(
+                                node_link["adapter_number"], node_link["port_number"], port.link.id
+                            )
+                        )
                         continue
-                    await link.add_node(node, node_link["adapter_number"], node_link["port_number"], label=node_link.get("label"), dump=False)
+                    await link.add_node(
+                        node,
+                        node_link["adapter_number"],
+                        node_link["port_number"],
+                        label=node_link.get("label"),
+                        dump=False,
+                    )
                 if len(link.nodes) != 2:
                     # a link should have 2 attached nodes, this can happen with corrupted projects
                     await self.delete_link(link.id, force_delete=True)
@@ -993,9 +1025,9 @@ class Project:
         except Exception as e:
             for compute in list(self._project_created_on_compute):
                 try:
-                    await compute.post("/projects/{}/close".format(self._id))
+                    await compute.post(f"/projects/{self._id}/close")
                 # We don't care if a compute is down at this step
-                except (ComputeError, aiohttp.web.HTTPNotFound, aiohttp.web.HTTPConflict, aiohttp.ServerDisconnectedError):
+                except ComputeError:
                     pass
             try:
                 if os.path.exists(path + ".backup"):
@@ -1005,7 +1037,7 @@ class Project:
             self._status = "closed"
             self._loading = False
             if isinstance(e, ComputeError):
-                raise aiohttp.web.HTTPConflict(text=str(e))
+                raise ControllerError(str(e))
             else:
                 raise e
         try:
@@ -1014,7 +1046,7 @@ class Project:
             pass
 
         self._loading = False
-        self.emit_controller_notification("project.opened", self.__json__())
+        self.emit_controller_notification("project.opened", self.asdict())
         # Should we start the nodes when project is open
         if self._auto_start:
             # Start all in the background without waiting for completion
@@ -1029,18 +1061,19 @@ class Project:
         while self._loading:
             await asyncio.sleep(0.5)
 
-    async def duplicate(self, name=None, location=None, reset_mac_addresses=True):
+    async def duplicate(self, name=None, reset_mac_addresses=True):
         """
         Duplicate a project
 
-        It's the save as feature of the 1.X. It's implemented on top of the
-        export / import features. It will generate a gns3p and reimport it.
-        It's a little slower but we have only one implementation to maintain.
+        Implemented on top of the export / import features. It will generate a gns3p and reimport it.
+
+        NEW: fast duplication is used if possible (when there are no remote computes).
+        If not, the project is exported and reimported as explained above.
 
         :param name: Name of the new project. A new one will be generated in case of conflicts
-        :param location: Parent directory of the new project
         :param reset_mac_addresses: Reset MAC addresses for the new project
         """
+
         # If the project was not open we open it temporary
         previous_status = self._status
         if self._status == "closed":
@@ -1048,36 +1081,58 @@ class Project:
 
         self.dump()
         assert self._status != "closed"
+
+        try:
+            proj = await self._fast_duplication(name, reset_mac_addresses)
+            if proj:
+                if previous_status == "closed":
+                    await self.close()
+                return proj
+            else:
+                log.info("Fast duplication failed, fallback to normal duplication")
+        except Exception as e:
+            raise ControllerError(f"Cannot duplicate project: {str(e)}")
+
         try:
             begin = time.time()
 
             # use the parent directory of the project we are duplicating as a
             # temporary directory to avoid no space left issues when '/tmp'
-            # is location on another partition.
-            if location:
-                working_dir = os.path.abspath(os.path.join(location, os.pardir))
-            else:
-                working_dir = os.path.abspath(os.path.join(self.path, os.pardir))
+            # is located on another partition.
+            working_dir = os.path.abspath(os.path.join(self.path, os.pardir))
 
             with tempfile.TemporaryDirectory(dir=working_dir) as tmpdir:
                 # Do not compress the exported project when duplicating
                 with aiozipstream.ZipFile(compression=zipfile.ZIP_STORED) as zstream:
-                    await export_project(zstream, self, tmpdir, keep_compute_id=True, allow_all_nodes=True, reset_mac_addresses=reset_mac_addresses)
+                    await export_project(
+                        zstream,
+                        self,
+                        tmpdir,
+                        keep_compute_ids=True,
+                        allow_all_nodes=True,
+                        reset_mac_addresses=reset_mac_addresses,
+                    )
 
                     # export the project to a temporary location
                     project_path = os.path.join(tmpdir, "project.gns3p")
-                    log.info("Exporting project to '{}'".format(project_path))
-                    async with aiofiles.open(project_path, 'wb') as f:
+                    log.info(f"Exporting project to '{project_path}'")
+                    async with aiofiles.open(project_path, "wb") as f:
                         async for chunk in zstream:
                             await f.write(chunk)
 
                     # import the temporary project
                     with open(project_path, "rb") as f:
-                        project = await import_project(self._controller, str(uuid.uuid4()), f, location=location, name=name, keep_compute_id=True)
+                        project = await import_project(
+                            self._controller,
+                            str(uuid.uuid4()),
+                            f,
+                            name=name,
+                            keep_compute_ids=True
+                        )
 
-            log.info("Project '{}' duplicated in {:.4f} seconds".format(project.name, time.time() - begin))
+            log.info(f"Project '{project.name}' duplicated in {time.time() - begin:.4f} seconds")
         except (ValueError, OSError, UnicodeEncodeError) as e:
-            raise aiohttp.web.HTTPConflict(text="Cannot duplicate project: {}".format(str(e)))
+            raise ControllerError(f"Cannot duplicate project: {str(e)}")
 
         if previous_status == "closed":
             await self.close()
@@ -1094,6 +1149,53 @@ class Project:
                 return True
         return False
 
+    @open_required
+    def lock(self):
+        """
+        Lock all drawings and nodes
+        """
+
+        for drawing in self._drawings.values():
+            if not drawing.locked:
+                drawing.locked = True
+                self.emit_notification("drawing.updated", drawing.asdict())
+        for node in self.nodes.values():
+            if not node.locked:
+                node.locked = True
+                self.emit_notification("node.updated", node.asdict())
+        self.dump()
+
+    @open_required
+    def unlock(self):
+        """
+        Unlock all drawings and nodes
+        """
+
+        for drawing in self._drawings.values():
+            if drawing.locked:
+                drawing.locked = False
+                self.emit_notification("drawing.updated", drawing.asdict())
+        for node in self.nodes.values():
+            if node.locked:
+                node.locked = False
+                self.emit_notification("node.updated", node.asdict())
+        self.dump()
+
+    @property
+    @open_required
+    def locked(self):
+        """
+        Check if all items in a project are locked and not
+        """
+
+        for drawing in self._drawings.values():
+            if not drawing.locked:
+                return False
+        for node in self.nodes.values():
+            if not node.locked:
+                return False
+        return True
+
     def dump(self):
         """
         Dump topology to disk
@@ -1101,12 +1203,12 @@ class Project:
         try:
             topo = project_to_topology(self)
             path = self._topology_file()
-            log.debug("Write %s", path)
+            log.debug(f"Write topology file '{path}'")
             with open(path + ".tmp", "w+", encoding="utf-8") as f:
                 json.dump(topo, f, indent=4, sort_keys=True)
             shutil.move(path + ".tmp", path)
         except OSError as e:
-            raise aiohttp.web.HTTPInternalServerError(text="Could not write topology: {}".format(e))
+            raise ControllerError(f"Could not write topology: {e}")
 
     @open_required
     async def start_all(self):
@@ -1160,41 +1262,37 @@ class Project:
         :param z: Z position
         :returns: New node
         """
-        if node.status != "stopped" and not node.is_always_running():
-            raise aiohttp.web.HTTPConflict(text="Cannot duplicate node data while the node is running")
 
-        data = copy.deepcopy(node.__json__(topology_dump=True))
+        if node.status != "stopped" and not node.is_always_running():
+            raise ControllerError("Cannot duplicate node data while the node is running")
+
+        data = copy.deepcopy(node.asdict(topology_dump=True))
         # Some properties like internal ID should not be duplicated
         for unique_property in (
-                'node_id',
-                'name',
-                'mac_addr',
-                'mac_address',
-                'compute_id',
-                'application_id',
-                'dynamips_id'):
+            "node_id",
+            "name",
+            "mac_addr",
+            "mac_address",
+            "compute_id",
+            "application_id",
+            "dynamips_id",
+        ):
             data.pop(unique_property, None)
-            if 'properties' in data:
-                data['properties'].pop(unique_property, None)
-        node_type = data.pop('node_type')
-        data['x'] = x
-        data['y'] = y
-        data['z'] = z
-        data['locked'] = False  # duplicated node must not be locked
+            if "properties" in data:
+                data["properties"].pop(unique_property, None)
+        node_type = data.pop("node_type")
+        data["x"] = x
+        data["y"] = y
+        data["z"] = z
+        data["locked"] = False  # duplicated node must not be locked
         new_node_uuid = str(uuid.uuid4())
-        new_node = await self.add_node(node.compute,
-                                       node.name,
-                                       new_node_uuid,
-                                       node_type=node_type,
-                                       **data)
+        new_node = await self.add_node(node.compute, node.name, new_node_uuid, node_type=node_type, **data)
         try:
-            await node.post("/duplicate", timeout=None, data={
-                "destination_node_id": new_node_uuid
-            })
-        except aiohttp.web.HTTPNotFound as e:
+            await node.post("/duplicate", timeout=None, data={"destination_node_id": new_node_uuid})
+        except ControllerNotFoundError:
             await self.delete_node(new_node_uuid)
-            raise aiohttp.web.HTTPConflict(text="This node type cannot be duplicated")
-        except aiohttp.web.HTTPConflict as e:
+            raise ControllerError("This node type cannot be duplicated")
+        except ControllerError as e:
             await self.delete_node(new_node_uuid)
             raise e
         return new_node
@@ -1205,10 +1303,10 @@ class Project:
             "nodes": len(self._nodes),
             "links": len(self._links),
             "drawings": len(self._drawings),
-            "snapshots": len(self._snapshots)
+            "snapshots": len(self._snapshots),
         }
 
-    def __json__(self):
+    def asdict(self):
         return {
             "name": self._name,
             "project_id": self._id,
@@ -1228,8 +1326,74 @@ class Project:
             "drawing_grid_size": self._drawing_grid_size,
             "show_interface_labels": self._show_interface_labels,
             "supplier": self._supplier,
-            "variables": self._variables
+            "variables": self._variables,
         }
 
     def __repr__(self):
-        return "<gns3server.controller.Project {} {}>".format(self._name, self._id)
+        return f"<gns3server.controller.Project {self._name} {self._id}>"
+
+    async def _fast_duplication(self, name=None, reset_mac_addresses=True):
+        """
+        Fast duplication of a project.
+
+        Copy the project files directly rather than in an import-export fashion.
+
+        :param name: Name of the new project. A new one will be generated in case of conflicts
+        :param reset_mac_addresses: Reset MAC addresses for the new project
+        """
+
+        # remote replication is not supported with remote computes
+        for compute in self.computes:
+            if compute.id != "local":
+                log.warning("Fast duplication is not supported with remote compute: '{}'".format(compute.id))
+                return None
+        # work dir
+        p_work = pathlib.Path(self.path).parent.absolute()
+        t0 = time.time()
+        new_project_id = str(uuid.uuid4())
+        new_project_path = p_work.joinpath(new_project_id)
+        # copy dir
+        await wait_run_in_executor(shutil.copytree, self.path, new_project_path.as_posix(), symlinks=True, ignore_dangling_symlinks=True)
+        log.info("Project content copied from '{}' to '{}' in {}s".format(self.path, new_project_path, time.time() - t0))
+        topology = json.loads(new_project_path.joinpath('{}.gns3'.format(self.name)).read_bytes())
+        project_name = name or topology["name"]
+        # If the project name is already used we generate a new one
+        project_name = self.controller.get_free_project_name(project_name)
+        topology["name"] = project_name
+        # To avoid unexpected behavior (project start without manual operations just after import)
+        topology["auto_start"] = False
+        topology["auto_open"] = False
+        topology["auto_close"] = False
+        # change node ID
+        node_old_to_new = {}
+        for node in topology["topology"]["nodes"]:
+            new_node_id = str(uuid.uuid4())
+            if "node_id" in node:
+                node_old_to_new[node["node_id"]] = new_node_id
+                _move_node_file(new_project_path, node["node_id"], new_node_id)
+            node["node_id"] = new_node_id
+            if reset_mac_addresses:
+                if "properties" in node:
+                    for prop, value in node["properties"].items():
+                        # reset the MAC address
+                        if prop in ("mac_addr", "mac_address"):
+                            node["properties"][prop] = None
+        # change link ID
+        for link in topology["topology"]["links"]:
+            link["link_id"] = str(uuid.uuid4())
+            for node in link["nodes"]:
+                node["node_id"] = node_old_to_new[node["node_id"]]
+        # Generate new drawings id
+        for drawing in topology["topology"]["drawings"]:
+            drawing["drawing_id"] = str(uuid.uuid4())
+
+        # And we dump the updated.gns3
+        dot_gns3_path = new_project_path.joinpath('{}.gns3'.format(project_name))
+        topology["project_id"] = new_project_id
+        with open(dot_gns3_path, "w+") as f:
+            json.dump(topology, f, indent=4)
+
+        os.remove(new_project_path.joinpath('{}.gns3'.format(self.name)))
+        project = await self.controller.load_project(dot_gns3_path, load=False)
+        log.info("Project '{}' fast duplicated in {:.4f} seconds".format(project.name, time.time() - t0))
+        return project

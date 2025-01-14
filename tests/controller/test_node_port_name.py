@@ -30,6 +30,7 @@ def compute():
     s.id = "http://test.com:42"
     return s
 
+
 @pytest.fixture
 def node(compute, project):
     node = Node(project, compute, "demo",
@@ -45,7 +46,7 @@ def test_list_ports(node):
     List port by default
     """
 
-    assert node.__json__()["ports"] == [
+    assert node.asdict()["ports"] == [
         {
             "name": "Ethernet0",
             "short_name": "e0",
@@ -63,7 +64,7 @@ def test_list_ports_vpcs(node):
     """
 
     node._node_type = "vpcs"
-    assert node.__json__()["ports"] == [
+    assert node.asdict()["ports"] == [
         {
             "name": "Ethernet0",
             "short_name": "e0",
@@ -82,7 +83,7 @@ def test_list_ports_docker(node):
 
     node._node_type = "docker"
     node._properties["adapters"] = 2
-    assert node.__json__()["ports"] == [
+    assert node.asdict()["ports"] == [
         {
             "name": "eth0",
             "short_name": "eth0",
@@ -110,26 +111,26 @@ def test_list_ports_port_name_format(node):
     node._first_port_name = None
     node._port_name_format = "eth{}"
     node._list_ports()
-    assert node.__json__()["ports"][0]["name"] == "eth0"
+    assert node.asdict()["ports"][0]["name"] == "eth0"
     node._port_name_format = "eth{port0}"
     node._list_ports()
-    assert node.__json__()["ports"][0]["name"] == "eth0"
+    assert node.asdict()["ports"][0]["name"] == "eth0"
     node._port_name_format = "eth{port1}"
     node._list_ports()
-    assert node.__json__()["ports"][0]["name"] == "eth1"
+    assert node.asdict()["ports"][0]["name"] == "eth1"
 
     node._first_port_name = ""
     node._port_segment_size = 2
     node._port_name_format = "eth{segment0}/{port0}"
     node.properties["adapters"] = 8
     node._list_ports()
-    assert node.__json__()["ports"][6]["name"] == "eth3/0"
-    assert node.__json__()["ports"][7]["name"] == "eth3/1"
+    assert node.asdict()["ports"][6]["name"] == "eth3/0"
+    assert node.asdict()["ports"][7]["name"] == "eth3/1"
 
     node._first_port_name = "mgnt0"
     node._list_ports()
-    assert node.__json__()["ports"][0]["name"] == "mgnt0"
-    assert node.__json__()["ports"][1]["name"] == "eth0/0"
+    assert node.asdict()["ports"][0]["name"] == "mgnt0"
+    assert node.asdict()["ports"][1]["name"] == "eth0/0"
 
 
 def test_list_ports_adapters(node):
@@ -138,7 +139,7 @@ def test_list_ports_adapters(node):
     """
 
     node.properties["adapters"] = 2
-    assert node.__json__()["ports"] == [
+    assert node.asdict()["ports"] == [
         {
             "name": "Ethernet0",
             "short_name": "e0",
@@ -175,7 +176,7 @@ def test_list_ports_adapters_cloud(project, compute):
         }
     ]
 
-    assert node.__json__()["ports"] == [
+    assert node.asdict()["ports"] == [
         {
             "name": "eth0",
             "short_name": "eth0",
@@ -206,7 +207,7 @@ def test_list_ports_ethernet_hub(project, compute):
         }
     ]
 
-    assert node.__json__()["ports"] == [
+    assert node.asdict()["ports"] == [
         {
             "name": "Ethernet0",
             "short_name": "e0",
@@ -238,7 +239,7 @@ def test_list_ports_atm_switch(project, compute):
         "1:0:100": "10:0:200"
     }
 
-    assert node.__json__()["ports"] == [
+    assert node.asdict()["ports"] == [
         {
             "name": "1",
             "short_name": "1",
@@ -271,7 +272,7 @@ def test_list_ports_frame_relay_switch(project, compute):
         "2:102": "11:203"
     }
 
-    assert node.__json__()["ports"] == [
+    assert node.asdict()["ports"] == [
         {
             "name": "1",
             "short_name": "1",
@@ -317,7 +318,7 @@ def test_list_ports_iou(compute, project):
                 node_type="iou")
     node.properties["serial_adapters"] = 2
     node.properties["ethernet_adapters"] = 3
-    assert node.__json__()["ports"] == [
+    assert node.asdict()["ports"] == [
         {
             "name": "Ethernet0/0",
             "short_name": "e0/0",
@@ -526,7 +527,7 @@ def test_list_ports_dynamips(project, compute):
     node.properties["wic0"] = "WIC-2T"
     node.properties["wic1"] = "WIC-2T"
 
-    assert node.__json__()["ports"] == [
+    assert node.asdict()["ports"] == [
         {
             "name": "FastEthernet0/0",
             "short_name": "f0/0",

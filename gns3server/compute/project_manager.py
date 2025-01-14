@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 #
 # Copyright (C) 2015 GNS3 Technologies Inc.
 #
@@ -15,16 +14,16 @@
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-import aiohttp
+
 import psutil
 import platform
-
 from .project import Project
-from ..config import Config
 from uuid import UUID
 
+from gns3server.compute.compute_error import ComputeError, ComputeNotFoundError
 
 import logging
+
 log = logging.getLogger(__name__)
 
 
@@ -72,10 +71,10 @@ class ProjectManager:
         try:
             UUID(project_id, version=4)
         except ValueError:
-            raise aiohttp.web.HTTPBadRequest(text="Project ID {} is not a valid UUID".format(project_id))
+            raise ComputeError(f"Project ID {project_id} is not a valid UUID")
 
         if project_id not in self._projects:
-            raise aiohttp.web.HTTPNotFound(text="Project ID {} doesn't exist".format(project_id))
+            raise ComputeNotFoundError(f"Project ID {project_id} doesn't exist")
         return self._projects[project_id]
 
     def _check_available_disk_space(self, project):
@@ -88,13 +87,13 @@ class ProjectManager:
         try:
             used_disk_space = psutil.disk_usage(project.path).percent
         except FileNotFoundError:
-            log.warning('Could not find "{}" when checking for used disk space'.format(project.path))
+            log.warning(f"Could not find '{project.path}' when checking for used disk space")
             return
         # send a warning if used disk space is >= 90%
         if used_disk_space >= 90:
-            message = 'Only {:.2f}% or less of free disk space detected in "{}" on "{}"'.format(100 - used_disk_space,
-                                                                                                project.path,
-                                                                                                platform.node())
+            message = 'Only {:.2f}% or less of free disk space detected in "{}" on "{}"'.format(
+                100 - used_disk_space, project.path, platform.node()
+            )
             log.warning(message)
             project.emit("log.warning", {"message": message})
 
@@ -106,8 +105,7 @@ class ProjectManager:
         """
         if project_id is not None and project_id in self._projects:
             return self._projects[project_id]
-        project = Project(name=name, project_id=project_id,
-                          path=path, variables=variables)
+        project = Project(name=name, project_id=project_id, path=path, variables=variables)
         self._check_available_disk_space(project)
         self._projects[project.id] = project
         return project
@@ -120,21 +118,5 @@ class ProjectManager:
         """
 
         if project_id not in self._projects:
-            raise aiohttp.web.HTTPNotFound(text="Project ID {} doesn't exist".format(project_id))
+            raise ComputeNotFoundError(f"Project ID {project_id} doesn't exist")
         del self._projects[project_id]
-
-    def check_hardware_virtualization(self, source_node):
-        """
-        Checks if hardware virtualization can be used.
-
-        :returns: boolean
-        """
-
-        if Config.instance().get_section_config("Server").getboolean("hardware_virtualization_check", True):
-            for project in self._projects.values():
-                for node in project.nodes:
-                    if node == source_node:
-                        continue
-                    if node.hw_virtualization and node.__class__.__name__ != source_node.__class__.__name__:
-                        return False
-        return True

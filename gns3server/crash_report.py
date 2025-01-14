@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 #
 # Copyright (C) 2014 GNS3 Technologies Inc.
 #
@@ -18,6 +17,7 @@
 try:
     import sentry_sdk
     from sentry_sdk.integrations.logging import LoggingIntegration
+
     SENTRY_SDK_AVAILABLE = True
 except ImportError:
     # Sentry SDK is not installed with deb package in order to simplify packaging
@@ -34,6 +34,7 @@ from .version import __version__, __version_info__
 from .config import Config
 
 import logging
+
 log = logging.getLogger(__name__)
 
 
@@ -57,16 +58,16 @@ class CrashReport:
     Report crash to a third party service
     """
 
-    DSN = "https://535981c5fae1a87b7e8d993590c07c27@o19455.ingest.sentry.io/38482"
+    DSN = "https://9cf53e6b9adfe49b867f1847b7cc4d72@o19455.ingest.us.sentry.io/38482"
     _instance = None
 
     def __init__(self):
 
         # We don't want sentry making noise if an error is caught when you don't have internet
-        sentry_errors = logging.getLogger('sentry.errors')
+        sentry_errors = logging.getLogger("sentry.errors")
         sentry_errors.disabled = True
 
-        sentry_uncaught = logging.getLogger('sentry.errors.uncaught')
+        sentry_uncaught = logging.getLogger("sentry.errors.uncaught")
         sentry_uncaught.disabled = True
 
         if SENTRY_SDK_AVAILABLE:
@@ -95,12 +96,10 @@ class CrashReport:
                     scope.set_tag(key, value)
 
             extra_context = {
-                "python:version": "{}.{}.{}".format(sys.version_info[0],
-                                                    sys.version_info[1],
-                                                    sys.version_info[2]),
+                "python:version": "{}.{}.{}".format(sys.version_info[0], sys.version_info[1], sys.version_info[2]),
                 "python:bit": struct.calcsize("P") * 8,
                 "python:encoding": sys.getdefaultencoding(),
-                "python:frozen": "{}".format(hasattr(sys, "frozen"))
+                "python:frozen": "{}".format(hasattr(sys, "frozen")),
             }
 
             if sys.platform.startswith("linux") and not hasattr(sys, "frozen"):
@@ -131,12 +130,13 @@ class CrashReport:
         if not SENTRY_SDK_AVAILABLE:
             return
 
-        if not hasattr(sys, "frozen") and os.path.exists(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".git")):
+        if not hasattr(sys, "frozen") and os.path.exists(
+            os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".git")
+        ):
             log.warning(".git directory detected, crash reporting is turned off for developers.")
             return
 
-        server_config = Config.instance().get_section_config("Server")
-        if server_config.getboolean("report_errors"):
+        if Config.instance().settings.Server.report_errors:
 
             if not SENTRY_SDK_AVAILABLE:
                 log.warning("Cannot capture exception: Sentry SDK is not available")
@@ -156,9 +156,9 @@ class CrashReport:
                         sentry_sdk.capture_exception()
                 else:
                     sentry_sdk.capture_exception()
-                log.info("Crash report sent with event ID: {}".format(sentry_sdk.last_event_id()))
+                log.info(f"Crash report sent with event ID: {sentry_sdk.last_event_id()}")
             except Exception as e:
-                log.warning("Can't send crash report to Sentry: {}".format(e))
+                log.warning(f"Can't send crash report to Sentry: {e}")
 
     @classmethod
     def instance(cls):

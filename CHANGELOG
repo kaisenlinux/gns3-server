@@ -1,5 +1,154 @@
 # Change Log
 
+## 3.0.2 03/01/2025
+
+* Bundle web-ui v3.0.2
+* Support to create templates based on image checksums.
+* Improvements for installing built-in disks.
+* Use watchdog instead of watchfiles to monitor for new images on the file system
+* Drop Python 3.8
+* Replace python-jose library by joserfc
+* Upgrade dependencies
+* Remove blocking IOU phone home call.
+
+## 3.0.1 27/12/2024
+
+* Bundle web-ui v3.0.1
+* Allow for upgrading built-in disks
+* Fix config parsing when configuring server protocol. Fixes https://github.com/GNS3/gns3-gui/issues/3681
+* Update empty Qemu disks with correct MD5 checksums
+* Increase timeout to run compute HTTP queries. Fixes #3453
+
+## 3.0.0 20/12/2024
+
+* Bundle web-ui v3.0.0
+* Use static favicon for API docs. Ref #3674
+* Configure self-hosting JavaScript and CSS for docs
+* Fix project auto open feature. Fixes #2455
+* Store IOU licence in the secrets directory and disable the check by default
+* Require "Project.Audit" permission to duplicate a project and check if "Project.Allocate" permission for the destination.
+
+## 2.2.52 02/12/2024
+
+* Bundle web-ui v2.2.52
+* Sync appliances
+* Remove restrictions based on file extension when listing images and fix ELF header checks
+* Fix use project name instead of ID for fast duplication when running local server. Fixes #2446
+* Overwrite user resources when the originals have changed.
+* Relax setuptools requirement to allow for easier Debian packaging on Ubuntu Focal & Jammy
+
+## 3.0.0rc2 20/11/2024
+
+* Bundle web-ui v3.0.0rc2
+* Fix error 500 on PUT for cloud, nat, vmware and vpcs nodes. Fixes #2426
+* Add a duplicated project in the same resource pools as the original project if it is in any
+* Upgrade FastAPI to v0.115.5
+* Overwrite user resources when the originals have changed.
+* Relax setuptools requirement to allow for easier Debian packaging on Ubuntu Focal & Jammy
+* Increase SQLite timeout. Ref #2422
+* Fix test user with wrong creds
+* Upgrade dependencies and fix Pydantic warnings
+* Upgrade aiohttp to v3.10.10. Fixes #2411
+* Replace aiohttp.web.HTTPConflict()
+* Python 3.13 support
+
+## 2.2.51 07/11/2024
+
+* Catch error when cannot resize Docker container TTY.
+* Do not use "ide" if there is a disk image and no interface type has been explicitly configured.
+* Use @locking when sending uBridge commands. Ref https://github.com/GNS3/gns3-gui/issues/3651
+* Fix run Docker containers with user namespaces enabled. Fixes #2414
+* Python 3.13 support
+* Upgrade dependencies
+* Fix errors in init.sh. Fixes #2431
+
+## 2.2.50 21/10/2024
+
+* Bundle web-ui v2.2.50
+* Symbolic links support for project export/import
+* Add comment to indicate sentry-sdk is optional. Ref https://github.com/GNS3/gns3-server/issues/2423
+* Fix issues with recent busybox versions
+* Support to reset MAC addresses for Docker nodes and some adjustments for fast duplication.
+* Update README.md to change the minimum required Python version.
+* Faster project duplication for local projects (no remote compute)
+* Improve error message when a project cannot be parsed.
+* Fix for running Docker containers with user namespaces enabled
+* Support for configuring MAC address in Docker containers
+* Upgrade aiohttp to v3.10.3
+
+## 3.0.0rc1 11/08/2024
+
+* Bundle web-ui v3.0.0rc1
+* Convert topologies < 3.0 to have valid node hostnames
+* Fix to access resources_path and install_builtin_appliances settings
+
+## 2.2.49 06/08/2024
+
+* Bundle web-ui v2.2.49
+* Forbid -nic and -nicdev in Qemu additional options. Fixes https://github.com/GNS3/gns3-server/issues/2397
+* Upgrade jsonschema and sentry-sdk packages
+* Update IOU base configs to use "no ip domain lookup". Fixes #2404
+
+## 2.2.48.1 12/07/2024
+
+* Bundle web-ui v2.2.48.1
+
+## 2.2.48 08/07/2024
+
+* Bundle web-ui v2.2.48
+* Add 'install_builtin_appliances' and 'resources_path' settings in the server config
+* Option to keep the compute IDs unchanged when exporting a project
+* Forbid unsafe Qemu additional options
+* Fix error when snapshot exists with an underscore in the name
+* Upgrade sentry-sdk, psutil and aiofiles packages
+* Fix check for IPv6 enabled on host
+
+## 3.0.0b3 19/05/2024
+
+* Bundle web-ui v3.0.0b3
+* Fix to allow duplicating IOS routers
+* Fix to allow changing the auxiliary console for IOS router nodes.
+* Replace deprecated method datetime.utcnow()
+* Upgrade FastAPI to v0.111.0
+* Fix reset console for non running IOU devices
+* Do not allow to create a builtin template using the API.
+* Use cryptography backend for python-jose. Ref #2372
+
+## 2.2.47 15/05/2024
+
+* Fix update-bundled-web-ui.sh script
+* Bundle web-ui v2.2.47
+* Change sentry-sdk version
+* Upgrade aiohttp, sentry-sdk and truststore
+* Upgrade jsonschema and aiohttp
+* Drop Python 3.7
+* Remove dev requirements for Python 3.6
+* Do not run Docker VM tests on Windows
+* Do not wait for the server to close when shutting down.
+* Fix test create image with not supported characters by filesystem. Fixes #2375
+* Allow listing x86_64 IOU images. Fixes #2376
+* Upgrade Jinja2 to version 3.1.4. Fixes #2378
+* Fix link capture for ATM switch. Fixes https://github.com/GNS3/gns3-gui/issues/3570
+* Fix tests after updating error message when busybox is not installed.
+* Add more details to error message when busybox is not installed. Fixes https://github.com/GNS3/gns3-gui/issues/3569
+* Fix invalid escape sequences
+* Add NAT symbols
+* Fix cannot stop Docker VM while console connection is still active.
+* Upgrade sentry-sdk to version 1.40.6
+
+## 3.0.0b2 07/04/2024
+
+* Bundle web-ui v3.0.0b2
+* Fix cannot stop Docker VM while console connection is still active.
+* Support for custom Qemu path in templates and nodes
+* Fix CPU fractional values for Docker VMs.
+* Use bcrypt directly instead of passlib
+* Update CORS policy
+* Do not stop searching for Qemu binaries if one binary cannot be executed. Ref #2306
+* Fix Ethernet switch and Ethernet hub port validations. Fixes #2334
+* Update CORS policy
+
+
 ## 2.2.46 26/02/2024
 
 * Bundle web-ui v2.2.46
@@ -24,6 +173,29 @@
 * Add custom executable paths on Windows
 * Upgrade sentry-sdk and aiohttp
 
+## 3.0.0b1 27/11/2023
+
+* Bundle web-ui v3.0.0b1
+* Upgrade sentry-sdk to v1.37.1
+* Upgrade aiohttp to v3.9.1
+* Fix bug when listing endpoints for opened project
+* Make images executable after importing a project
+* Disable IOS hostname check for Dynamips ghost instances
+
+## 3.0.0a6 15/11/2023
+
+* Bundle web-ui v3.0.0a6
+* Upgrade to aiohttp v3.9.0rc0
+* Install Docker resources in writable location
+* Default compute username is "gns3"
+* Non-blocking checksums computation when server starts. Fixes #2228
+* Fix timeout issue when creating Qemu disk image. Fixes https://github.com/GNS3/gns3-server/issues/2313
+* Fix broken link to Web UI in 3.0 branch. Fixes #2312
+* Fix sample config: VMware section declared twice. Fixes #2311
+* Fix ws console and packet capture over SSL
+* Support for web socket console over HTTPS
+* Allow disabling hardware virtualization check
+
 ## 2.2.44.1 07/11/2023
 
 * Catch exceptions when computing image checksums. Ref https://github.com/GNS3/gns3-server/issues/2228
@@ -42,6 +214,78 @@
 * Add Qemu IGB network device
 * Add Python 3.12 support.
 * Fix issue with importlib.resources.files() and Python 3.9
+
+## 3.0.0a5 27/10/2023
+
+* Bundle web-ui v3.0.0a5
+* Fix L2IOU "failed code signing checks" when IOU base file name is >= 63 characters
+* Python 3.12 support
+* Add igb Qemu adapter
+* Change "ip cef" to "no ip cef" in IOU default configs. Fixes #2298
+* Drop support for Python 3.7 and upgrade dependencies
+* Fix compute authentication for websocket endpoints
+* Add Qemu IGB network device
+
+## 3.0.0a4 18/10/2023
+
+* Bundle web-ui v3.0.0a4
+* Do not enforce Compute.Audit and Template.Audit privileges due to current web-ui limitations
+* Support to create empty disk images on the controller
+* Fix issue with importlib.resources.files() and Python 3.9
+* New RBAC system with resource pools support.
+* Use controller vars file to store version and appliance etag
+* Pydantic v2 migration
+* Allow connection to ws console over IPv6
+* Allow computes to be dynamically or manually allocated
+* Add UEFI boot mode option for Qemu VMs
+* Mark VMware and VirtualBox support as deprecated
+* Make port name for custom adapters optional. Fixes https://github.com/GNS3/gns3-web-ui/issues/1430
+* Support for database schema migrations using alembic
+* Add config option to change the server name. Ref #2149
+* Option to disable image discovery and do not scan parent directory
+* Allow raw images by default. Fixes https://github.com/GNS3/gns3-server/issues/2097
+* Fix bug when creating Dynamips router with chassis setting
+* Stricter checks to create/update an Ethernet switch and add tests
+* Fix schema for removing WICs from Cisco routers. Fixes #3392
+* Fix some issues with HTTP notification streams
+* API endpoint to get the locked status of a project
+* Global project lock and unlock
+* Require name for custom adapters. Fixes #2098
+* Allow empty adapter slots for Dynamips templates. Ref https://github.com/GNS3/gns3-gui/issues/3373
+* Custom adapters should not be in node (compute) properties returned to clients. Fixes https://github.com/GNS3/gns3-gui/issues/3366
+* Optionally allow Qemu raw images
+* Ignore image detection for IOU user libraries in image directory
+* Checks for valid hostname on server side for Dynamips, IOU, Qemu and Docker nodes
+* Only check files (not directories) when looking for new images on file system.
+* Support user defined loader/libraries to run IOU
+* Remove explicit Response for VPCS endpoints returning HTTP 204 status code
+* Remove explicit Response for endpoints returning HTTP 204 status code
+* Make 'vendor_url' and 'maintainer_email' optional for template validation.
+* Allow auth token to be passed as a URL param
+* Add controller endpoints to get VirtualBox VMs, VMware VMs and Docker images
+* Detect new images added to the default image directory. * Images can be present before the server starts or while it is running * Images are recorded in the database
+* Support delete Qemu disk image from API Return the real disk image name in the 'hdx_disk_image_backed' property for Qemu VMs
+* Fix ComputeConflictError import
+* Handle creating Qemu disk images and resizing
+* Finish to clean up local setting usage. Ref #1460
+* "Local" command line parameter is only for stopping a server that has been started by the desktop GUI
+* Fix AsyncSession handling after breaking changes in FastAPI 0.74.0 See https://github.com/tiangolo/fastapi/releases/tag/0.74.0 for details.
+* Detect image type instead of requesting it from user
+* Add connect endpoint for computes Param to connect to compute after creation Report compute unauthorized HTTP errors to client
+* Replace CORS origins by origin regex
+* Allow empty compute_id. Ref #1657
+* Secure controller to compute communication using HTTP basic authentication
+* Secure websocket endpoints
+* Allocate compute when compute_id is unset
+* Return the current controller hostname/IP from any compute
+* Remove Qemu legacy networking support
+* Appliance management refactoring: * Install an appliance based on selected version * Each template have unique name and version * Allow to download an appliance file
+* Add isolate and unisolate endpoints. Ref https://github.com/GNS3/gns3-gui/issues/3190
+* Allow images to be stored in subdirs and used by templates.
+* Use uuid5 to create new compute_id. Fixes #1641 #1887
+* Migrate PCAP streaming code to work with FastAPI.
+* Refactor WebSocket console code to work with FastAPI. Fix endpoint routes.
+
 
 ## 2.2.43 19/09/2023
 
@@ -125,6 +369,28 @@
 * Only use importlib_resources for Python <= 3.9. Fixes #2147
 * Support when the user field defined in Docker container is an ID. Fixes #2134
 
+## 3.0.0a3 27/12/2022
+
+* Add web-ui v3.0.0a3
+* Add config option to change the server name. Ref #2149
+* Option to disable image discovery and do not scan parent directory
+* Allow raw images by default. Fixes https://github.com/GNS3/gns3-server/issues/2097
+* Fix bug when creating Dynamips router with chassis setting
+* Stricter checks to create/update an Ethernet switch and add tests
+* Fix schema for removing WICs from Cisco routers. Fixes #3392
+* Fix issues with VMnet interface on macOS >= 11.0. Ref #3381
+* Use importlib_resources instead of pkg_resources and install built-in appliances in config dir.
+* Fix console vnc don't use configured ports in some case. Fixes #2111
+* Add missing VMware settings in gns3_server.conf
+* Make version PEP 440 compliant
+* Support for Python 3.11
+* Allow for more dependency versions at patch level
+* Replace deprecated distro.linux_distribution() call
+* Update gns3.service.systemd
+* Fix some issues with HTTP notification streams
+* gns3.service.openrc: make openrc script posix compliant
+* fix: use exact match to find interface in windows to avoid get wrong interface
+
 ## 2.2.35.1 10/11/2022
 
 * Re-release Web-Ui v2.2.35
@@ -143,6 +409,154 @@
 * Update gns3.service.systemd
 * gns3.service.openrc: make openrc script posix compliant
 * fix: use exact match to find interface in windows to avoid get wrong interface
+
+## 3.0.0a2 06/09/2022
+
+* Add web-ui v3.0.0a2
+* Upgrade FastAPI to v0.82.0
+* API endpoint to get the locked status of a project
+* Global project lock and unlock
+* Update appliance files
+* Require name for custom adapters. Fixes #2098
+* Allow empty adapter slots for Dynamips templates. Ref https://github.com/GNS3/gns3-gui/issues/3373
+* Use original $PATH in init.sh for Docker containers. Ref #2069
+
+## 3.0.0a1 04/08/2022
+
+* Bundle gns3-web-ui v3.0.0a1
+* Use default symbol theme if none is provided when loading appliances
+* Allow default symbol theme to be configured in config file
+* Optionally allow Qemu raw images
+* Ignore image detection for IOU user libraries in image directory
+* Don't show optional token param in API docs
+* Fix check for 32-bit in ELF header
+* Checks for valid hostname on server side for Dynamips, IOU, Qemu and Docker nodes
+* Only check files (not directories) when looking for new images on file system.
+* Support user defined loader/libraries to run IOU
+* Make 'vendor_url' and 'maintainer_email' optional for template validation.
+* Allow auth token to be passed as a URL param
+* HTTP middleware create issues when streaming project archive
+* Add zstandard compression support for project export
+* Make sure that the temporary image file is removed after uploading an image
+* Do not cache to md5sum file in some situations
+* Detect new images added to the default image directory. * Images can be present before the server starts or while it is running * Images are recorded in the database
+* Support delete Qemu disk image from API Return the real disk image name in the 'hdx_disk_image_backed' property for Qemu VMs
+* Handle creating Qemu disk images and resizing
+* Finish to clean up local setting usage. Ref #1460
+* "Local" command line parameter is only for stopping a server that has been started by the desktop GUI
+* Fix AsyncSession handling after breaking changes in FastAPI 0.74.0 See https://github.com/tiangolo/fastapi/releases/tag/0.74.0 for details.
+* Detect image type instead of requesting it from user
+* Drop Python 3.6 support and require Python >= 3.7
+* Drop Windows support
+* Add connect endpoint for computes Param to connect to compute after creation Report compute unauthorized HTTP errors to client
+* Replace CORS origins by origin regex
+* Change default config settings
+* Update Docker image for tests
+* Fix calls to static methods in server.py
+* Do not require the local server param to open a .gns3 file. Fixes https://github.com/GNS3/gns3-gui/issues/2421 Ref #1460
+* Do not automatically install appliance after uploading image
+* Ignore OSError when closing websocket
+* Allow empty compute_id. Ref #1657
+* Secure controller to compute communication using HTTP basic authentication
+* Secure websocket endpoints
+* Fix issue when updating a template
+* Allocate compute when compute_id is unset
+* Return the current controller hostname/IP from any compute
+* Remove Qemu legacy networking support
+* Add a custom version to an appliance
+* Appliance management refactoring: * Install an appliance based on selected version * Each template have unique name and version * Allow to download an appliance file
+* Finalize image management refactoring and auto install appliance if possible
+* Sqlite doesn't allow BigInteger to be used as an primary key with autoincrement
+* Add isolate and unisolate endpoints. Ref https://github.com/GNS3/gns3-gui/issues/3190
+* Small db tables adjustments
+* Add index for "name" field in role table
+* Allow images to be stored in subdirs and used by templates.
+* Option to prune images when deleting template.
+* Associate images when creating or updating a template.
+* Add prune images endpoint. Use many-to-many relationship between images and templates.
+* Check if user has the right to add a permission
+* Only use the necessary HTTP methods for default permissions
+* Add /permissions/prune to delete orphaned permissions
+* Check a permission matches an existing route before it is allowed to be created.
+* Remove busybox and copy system busybox in setup.py
+* Save image size + start to automatic template creation based on image checksum.
+* Upgrade dependencies
+* Fix "-machine accel=tcg" check
+* Allow logged in user to change some of its data. Administrators can lock users using the `is_active` field.
+* Symbols endpoints (except upload) don't require authentication.
+* Update to the udhcpc wrapper script. Ref #1890
+* Fix link style merge
+* Start refactoring for images management
+* Allow controller to be reloaded using the API. Fixes #1743
+* Use a stock BusyBox for the Docker Integration
+* Move "/{project_id}/templates/{template_id}" endpoint.
+* Add last login info for users.
+* Change RBAC field names from builtin to is_builtin
+* Add user permissions + RBAC tests.
+* Add description for user permission.
+* Save/restore appliances Etag.
+* Allow to set the initial super admin username / password in server config file. Ref #1857
+* Require authentication for get_user_memberships endpoint.
+* Change method to prevent forbidden directory traversal. Ref #1894
+* Add user groups support.
+* Add delete cascade on foreign keys for appliance table
+* Enable SQL foreign key support for SQLite
+* Add missing CORS origins.
+* Show topology path when check topology schema fails.
+* Protect controller notification endpoints. Ref #1888 (WebSocket endpoint is not secured, it takes an optional token).
+* Use uuid5 to create new compute_id. Fixes #1641 #1887
+* Protect the API and add alternative authentication endpoint.
+* Secure users API and handle manual password recovery.
+* Add default super admin account in controller db.
+* Complete type annotations for API endpoints.
+* Detect the app is exiting and avoid reconnecting to computes.
+* Move schemas between compute and controller subpackages
+* Remove traceng code.
+* Move error responses to API routers.
+* Wait for local compute to be started. Don't reconnect to local compute when server is being stopped.
+* Rename ssl and auth configuration file settings. Add enable SSL config validator. Strict configuration file validation: any error will prevent the server to start. Core server logic moved to a Server class.
+* Generate new config for each test. Fixes tests.
+* Use Pydantic to validate the server config file.
+* Add symbol dimensions endpoint and SSL support for packet capture with remote HTTPS server.
+* Save computes to database
+* Generate a new list in template schema defaults.
+* Generate JWT secret key if none is configured in the config file. Change location of the database.
+* User authentication with tests.
+* Refactor tests and start work on database integration.
+* Move endpoints to routes & preparations to use a database.
+* Providing the path to create a project is now deprecated.
+* Add back script to create a self-signed SSL certificate.
+* Make sure all HTTP exceptions return JSON with a "message" field instead of "detail"
+* Make Swagger Ui the default for API documentation
+* Move to version 3 of the REST API. Rename packet capture endpoints.
+* Use pydantic for data validation (instead of jsonschema) Fix/improve various pydantic schema models.
+* Automate API documentation publishing.
+* Publish API documentation generated by FastAPI.
+* Overwrite uvicorn loggers.
+* Do not automatically connect to local compute.
+* Add HTTP client to reuse the aiohttp session where needed. Remove unnecessary aiohttp exceptions.
+* Warn not to use the private compute API. Fixes #1593.
+* Migrate PCAP streaming code to work with FastAPI.
+* Refactor WebSocket console code to work with FastAPI. Fix endpoint routes.
+* Use dependencies and group common HTTP responses in endpoints.
+* Migration to FastAPI
+* Prioritize the config disk over HD-D for Qemu VMs. Fixes https://github.com/GNS3/gns3-gui/issues/3036
+* Create config disk property false by default for Qemu templates
+* Set default disk interface type to "none". Fail-safe: use "ide" if an image is set but no interface type is configured. Use the HDA disk interface type if none has been configured for HDD.
+* Add explicit option to automatically create or not the config disk. Off by default.
+* Auxiliary console support for Qemu. Ref #2873 Improvements for auxiliary console support for Docker and Dynamips.
+* Fix AUX console not allocated for Dynamips IOS routers.
+* Disallow to rename a running node. Fixes https://github.com/GNS3/gns3-gui/issues/2499
+* Support to reset all console connections. Ref https://github.com/GNS3/gns3-server/issues/1619
+* Support to reset links. Fixes https://github.com/GNS3/gns3-server/issues/1620
+* Add maxcpus property for Qemu VMs. Ref #1674
+* QEMU config disk support
+* Read folder structure correctly for custom symbols. Fixes https://github.com/GNS3/gns3-gui/issues/2856
+* Add total RAM, CPUs and disk size to servers summary as well as disk usage in percent. Fixes https://github.com/GNS3/gns3-server/issues/1532
+* Resource constraints for Docker VMs.
+* Update IOUtools. Ref #1627
+* Use parent directory as working directory for project duplication and snapshots. Fixes https://github.com/GNS3/gns3-gui/issues/2909
+* Support for "usage" for "Cloud" nodes. Fixes https://github.com/GNS3/gns3-gui/issues/2887 Allow "usage" for all builtin nodes (not exposed in Ui).
 
 ## 2.2.34 28/08/2022
 

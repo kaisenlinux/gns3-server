@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 #
 # Copyright (C) 2015 GNS3 Technologies Inc.
 #
@@ -15,19 +14,12 @@
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-VERSION_SCHEMA = {
-    "$schema": "http://json-schema.org/draft-04/schema#",
-    "type": "object",
-    'required': ['version'],
-    "additionalProperties": False,
-    "properties": {
-        "version": {
-            "description": "Version number",
-            "type": "string",
-        },
-        "local": {
-            "description": "Whether this is a local server or not",
-            "type": "boolean",
-        }
-    }
-}
+from pydantic import BaseModel, Field
+from typing import Optional
+
+
+class Version(BaseModel):
+
+    controller_host: Optional[str] = Field(None, description="Controller hostname or IP address")
+    version: str = Field(..., description="Version number")
+    local: Optional[bool] = Field(None, description="Whether this is a local server or not")

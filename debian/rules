@@ -8,7 +8,7 @@ export DEB_BUILD_OPTIONS=nocheck
 
 override_dh_auto_install:
 	dh_auto_install
-	install -p -m 0660 $(CURDIR)/conf/gns3_server.conf $(CURDIR)/debian/gns3-server/var/lib/gns3/
+	install -p -m 0660 $(CURDIR)/gns3server/config_samples/gns3_server.conf $(CURDIR)/debian/gns3-server/var/lib/gns3/
 
 override_dh_installsystemd:
 	dh_installsystemd --no-enable --no-start

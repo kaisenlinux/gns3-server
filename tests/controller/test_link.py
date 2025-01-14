@@ -16,17 +16,18 @@
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 import pytest
-import aiohttp
+import pytest_asyncio
 from unittest.mock import MagicMock
 
 from gns3server.controller.link import Link
 from gns3server.controller.node import Node
 from gns3server.controller.ports.ethernet_port import EthernetPort
 from gns3server.controller.ports.serial_port import SerialPort
+from gns3server.controller.controller_error import ControllerError
 from tests.utils import AsyncioBytesIO, AsyncioMagicMock
 
 
-@pytest.fixture
+@pytest_asyncio.fixture
 async def link(project, compute):
 
     node1 = Node(project, compute, "node1", node_type="qemu")
@@ -48,6 +49,7 @@ def test_eq(project, link):
     assert link != Link(project)
 
 
+@pytest.mark.asyncio
 async def test_add_node(project, compute):
 
     node1 = Node(project, compute, "node1", node_type="qemu")
@@ -79,10 +81,11 @@ async def test_add_node(project, compute):
     await link.add_node(node2, 0, 4)
 
     assert link.create.called
-    link._project.emit_notification.assert_called_with("link.created", link.__json__())
+    link._project.emit_notification.assert_called_with("link.created", link.asdict())
     assert link in node2.links
 
 
+@pytest.mark.asyncio
 async def test_add_node_already_connected(project, compute):
     """
     Raise an error if we try to use an already connected port
@@ -104,10 +107,11 @@ async def test_add_node_already_connected(project, compute):
     assert link.create.called
     link2 = Link(project)
     link2.create = AsyncioMagicMock()
-    with pytest.raises(aiohttp.web.HTTPConflict):
+    with pytest.raises(ControllerError):
         await link2.add_node(node1, 0, 4)
 
 
+@pytest.mark.asyncio
 async def test_add_node_cloud(project, compute):
 
     node1 = Node(project, compute, "node1", node_type="qemu")
@@ -123,6 +127,7 @@ async def test_add_node_cloud(project, compute):
     await link.add_node(node2, 0, 4)
 
 
+@pytest.mark.asyncio
 async def test_add_node_cloud_to_cloud(project, compute):
     """
     Cloud to cloud connection is not allowed
@@ -138,10 +143,11 @@ async def test_add_node_cloud_to_cloud(project, compute):
     link._project.emit_notification = MagicMock()
 
     await link.add_node(node1, 0, 4)
-    with pytest.raises(aiohttp.web.HTTPConflict):
+    with pytest.raises(ControllerError):
         await link.add_node(node2, 0, 4)
 
 
+@pytest.mark.asyncio
 async def test_add_node_same_node(project, compute):
     """
     Connection to the same node is not allowed
@@ -155,10 +161,11 @@ async def test_add_node_same_node(project, compute):
     link._project.emit_notification = MagicMock()
 
     await link.add_node(node1, 0, 4)
-    with pytest.raises(aiohttp.web.HTTPConflict):
+    with pytest.raises(ControllerError):
         await link.add_node(node1, 0, 5)
 
 
+@pytest.mark.asyncio
 async def test_add_node_serial_to_ethernet(project, compute):
     """
     Serial to ethernet connection is not allowed
@@ -174,10 +181,11 @@ async def test_add_node_serial_to_ethernet(project, compute):
     link._project.emit_notification = MagicMock()
 
     await link.add_node(node1, 0, 4)
-    with pytest.raises(aiohttp.web.HTTPConflict):
+    with pytest.raises(ControllerError):
         await link.add_node(node2, 0, 4)
 
 
+@pytest.mark.asyncio
 async def test_json(project, compute):
 
     node1 = Node(project, compute, "node1", node_type="qemu")
@@ -189,7 +197,7 @@ async def test_json(project, compute):
     link.create = AsyncioMagicMock()
     await link.add_node(node1, 0, 4)
     await link.add_node(node2, 1, 3)
-    assert link.__json__() == {
+    assert link.asdict() == {
         "link_id": link.id,
         "project_id": project.id,
         "nodes": [
@@ -221,7 +229,7 @@ async def test_json(project, compute):
         "capture_file_path": None,
         "capture_compute_id": None
     }
-    assert link.__json__(topology_dump=True) == {
+    assert link.asdict(topology_dump=True) == {
         "link_id": link.id,
         "nodes": [
             {
@@ -249,6 +257,7 @@ async def test_json(project, compute):
     }
 
 
+@pytest.mark.asyncio
 async def test_json_serial_link(project, compute):
 
     node1 = Node(project, compute, "node1", node_type="qemu")
@@ -260,9 +269,10 @@ async def test_json_serial_link(project, compute):
     link.create = AsyncioMagicMock()
     await link.add_node(node1, 0, 4)
     await link.add_node(node2, 1, 3)
-    assert link.__json__()["link_type"] == "serial"
+    assert link.asdict()["link_type"] == "serial"
 
 
+@pytest.mark.asyncio
 async def test_default_capture_file_name(project, compute):
 
     node1 = Node(project, compute, "Hello@", node_type="qemu")
@@ -277,7 +287,9 @@ async def test_default_capture_file_name(project, compute):
     assert link.default_capture_file_name() == "Hello_0-4_to_w0rld_1-3.pcap"
 
 
+@pytest.mark.asyncio
 async def test_start_capture(link):
+
 
     async def fake_reader():
         return AsyncioBytesIO()
@@ -287,18 +299,20 @@ async def test_start_capture(link):
     await link.start_capture(capture_file_name="test.pcap")
     assert link._capturing
     assert link._capture_file_name == "test.pcap"
-    link._project.emit_notification.assert_called_with("link.updated", link.__json__())
+    link._project.emit_notification.assert_called_with("link.updated", link.asdict())
 
 
+@pytest.mark.asyncio
 async def test_stop_capture(link):
 
     link._capturing = True
     link._project.emit_notification = MagicMock()
     await link.stop_capture()
     assert link._capturing is False
-    link._project.emit_notification.assert_called_with("link.updated", link.__json__())
+    link._project.emit_notification.assert_called_with("link.updated", link.asdict())
 
 
+@pytest.mark.asyncio
 async def test_delete(project, compute):
 
     node1 = Node(project, compute, "node1", node_type="qemu")
@@ -318,6 +332,7 @@ async def test_delete(project, compute):
     assert link not in node2.links
 
 
+@pytest.mark.asyncio
 async def test_update_filters(project, compute):
 
     node1 = Node(project, compute, "node1", node_type="qemu")
@@ -348,6 +363,7 @@ async def test_update_filters(project, compute):
     assert link.update.called
 
 
+@pytest.mark.asyncio
 async def test_available_filters(project, compute):
 
     node1 = Node(project, compute, "node1", node_type="ethernet_switch")

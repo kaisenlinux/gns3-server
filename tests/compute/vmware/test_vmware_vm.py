@@ -16,20 +16,21 @@
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 import pytest
+import pytest_asyncio
 
 from gns3server.compute.vmware.vmware_vm import VMwareVM
 from gns3server.compute.vmware import VMware
 
 
-@pytest.fixture
-async def manager(loop, port_manager):
+@pytest_asyncio.fixture
+async def manager(port_manager):
 
     m = VMware.instance()
     m.port_manager = port_manager
     return m
 
 
-@pytest.fixture(scope="function")
+@pytest_asyncio.fixture(scope="function")
 async def vm(compute_project, manager, tmpdir):
 
     fake_vmx = str(tmpdir / "test.vmx")
@@ -37,20 +38,23 @@ async def vm(compute_project, manager, tmpdir):
     return VMwareVM("test", "00010203-0405-0607-0809-0a0b0c0d0e0f", compute_project, manager, fake_vmx, False)
 
 
+@pytest.mark.asyncio
 async def test_vm(vm):
 
     assert vm.name == "test"
     assert vm.id == "00010203-0405-0607-0809-0a0b0c0d0e0f"
 
 
+@pytest.mark.asyncio
 async def test_json(vm, tmpdir, compute_project):
 
-    assert vm.__json__()["node_directory"] is not None
+    assert vm.asdict()["node_directory"] is not None
     compute_project._path = str(tmpdir)
     vm._linked_clone = True
-    assert vm.__json__()["node_directory"] is not None
+    assert vm.asdict()["node_directory"] is not None
 
 
+@pytest.mark.asyncio
 async def test_start_capture(vm, tmpdir, manager, free_console_port):
 
     output_file = str(tmpdir / "test.pcap")
@@ -61,6 +65,7 @@ async def test_start_capture(vm, tmpdir, manager, free_console_port):
     assert vm._ethernet_adapters[0].get_nio(0).capturing
 
 
+@pytest.mark.asyncio
 async def test_stop_capture(vm, tmpdir, manager, free_console_port):
 
     output_file = str(tmpdir / "test.pcap")

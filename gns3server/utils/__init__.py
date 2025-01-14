@@ -21,6 +21,9 @@ import re
 import shlex
 import textwrap
 import posixpath
+import socket
+import errno
+import hashlib
 
 
 def force_unix_path(path):
@@ -60,10 +63,10 @@ def parse_version(version):
     """
 
     release_type_found = False
-    version_infos = re.split('(\.|[a-z]+)', version)
+    version_infos = re.split(r"(\.|[a-z]+)", version)
     version = []
     for info in version_infos:
-        if info == '.' or len(info) == 0:
+        if info == "." or len(info) == 0:
             continue
         try:
             info = int(info)
@@ -77,8 +80,8 @@ def parse_version(version):
             if len(version) == 2:
                 version.append("000000")
             # We want rc to be at lower level than dev version
-            if info == 'rc':
-                info = 'c'
+            if info == "rc":
+                info = "c"
             version.append(info)
             release_type_found = True
     if release_type_found is False:
@@ -91,12 +94,30 @@ def parse_version(version):
     return tuple(version)
 
 
-def shlex_quote(s):
+def is_ipv6_enabled() -> bool:
+
+    if not socket.has_ipv6:
+        return False  # the socket library has no support for IPv6
+    try:
+        with socket.socket(socket.AF_INET6, socket.SOCK_STREAM) as sock:
+            sock.bind(("::1", 0))
+        return True
+    except OSError as e:
+        if e.errno in (errno.EADDRNOTAVAIL, errno.EAFNOSUPPORT):
+            # EADDRNOTAVAIL is the errno if IPv6 modules/drivers are loaded but disabled.
+            # EAFNOSUPPORT is the errno if IPv6 modules/drivers are not loaded at all.
+            return False
+        if e.errno == errno.EADDRINUSE:
+            return True
+        raise
+
+def md5sum(filename):
     """
-    Compatible shlex_quote to handle case where Windows needs double quotes around file names, not single quotes.
+    Calculate the MD5 checksum of a file.
     """
 
-    if sys.platform.startswith("win"):
-        return s if re.match(r'^[-_\w./]+$', s) else '"%s"' % s.replace('"', '\\"')
-    else:
-        return shlex.quote(s)
+    hash_md5 = hashlib.md5()
+    with open(filename, "rb") as f:
+        for chunk in iter(lambda: f.read(4096), b""):
+            hash_md5.update(chunk)
+    return hash_md5.hexdigest()

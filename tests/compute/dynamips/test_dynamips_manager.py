@@ -17,8 +17,8 @@
 
 
 import pytest
+import pytest_asyncio
 import tempfile
-import sys
 import uuid
 import os
 
@@ -28,27 +28,27 @@ from unittest.mock import patch
 from tests.utils import asyncio_patch, AsyncioMagicMock
 
 
-@pytest.fixture
-async def manager(loop, port_manager):
+@pytest_asyncio.fixture
+async def manager(port_manager):
 
     m = Dynamips.instance()
     m.port_manager = port_manager
     return m
 
 
-def test_vm_invalid_dynamips_path(manager):
+def test_vm_invalid_dynamips_path(manager, config):
 
-    with patch("gns3server.config.Config.get_section_config", return_value={"dynamips_path": "/bin/test_fake"}):
-        with pytest.raises(DynamipsError):
-            manager.find_dynamips()
+    config.settings.Dynamips.dynamips_path = "/bin/test_fake"
+    with pytest.raises(DynamipsError):
+        manager.find_dynamips()
 
 
-@pytest.mark.skipif(sys.platform.startswith("win"), reason="Not supported by Windows")
-def test_vm_non_executable_dynamips_path(manager):
+def test_vm_non_executable_dynamips_path(manager, config):
+
     tmpfile = tempfile.NamedTemporaryFile()
-    with patch("gns3server.config.Config.get_section_config", return_value={"dynamips_path": tmpfile.name}):
-        with pytest.raises(DynamipsError):
-            manager.find_dynamips()
+    config.settings.Dynamips.dynamips_path = tmpfile.name
+    with pytest.raises(DynamipsError):
+        manager.find_dynamips()
 
 
 def test_get_dynamips_id(manager):
@@ -85,6 +85,7 @@ def test_release_dynamips_id(manager):
     manager.release_dynamips_id(project_2, 0)
 
 
+@pytest.mark.asyncio
 async def test_project_closed(manager, compute_project):
 
     manager._dynamips_ids[compute_project.id] = set([1, 2, 3])
@@ -97,6 +98,7 @@ async def test_project_closed(manager, compute_project):
     assert compute_project.id not in manager._dynamips_ids
 
 
+@pytest.mark.asyncio
 async def test_duplicate_node(manager, compute_project):
     """
     Duplicate dynamips do nothing it's manage outside the

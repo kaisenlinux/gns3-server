@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 #
 # Copyright (C) 2015 GNS3 Technologies Inc.
 #
@@ -22,11 +21,12 @@ Qemu server module.
 import asyncio
 import os
 import platform
+import shutil
+import shlex
 import sys
 import re
 import subprocess
 
-from ...utils import shlex_quote
 from ...utils.asyncio import subprocess_check_output
 from ...utils.get_resource import get_resource
 from ..base_manager import BaseManager
@@ -37,6 +37,7 @@ from .utils.guest_cid import get_next_guest_cid
 from .utils.ziputils import unpack_zip
 
 import logging
+
 log = logging.getLogger(__name__)
 
 
@@ -115,29 +116,15 @@ class Qemu(BaseManager):
         else:
             log.warning("The PATH environment variable doesn't exist")
         # look for Qemu binaries in the current working directory and $PATH
-        if sys.platform.startswith("win"):
-            # add specific Windows paths
-            if hasattr(sys, "frozen"):
-                # add any qemu dir in the same location as gns3server.exe to the list of paths
+        if sys.platform.startswith("darwin") and hasattr(sys, "frozen"):
+            # add specific locations on Mac OS X regardless of what's in $PATH
+            paths.update(["/usr/bin", "/usr/local/bin", "/opt/local/bin"])
+            try:
                 exec_dir = os.path.dirname(os.path.abspath(sys.executable))
-                for f in os.listdir(exec_dir):
-                    if f.lower().startswith("qemu"):
-                        paths.add(os.path.join(exec_dir, f))
-
-            if "PROGRAMFILES(X86)" in os.environ and os.path.exists(os.environ["PROGRAMFILES(X86)"]):
-                paths.add(os.path.join(os.environ["PROGRAMFILES(X86)"], "qemu"))
-            if "PROGRAMFILES" in os.environ and os.path.exists(os.environ["PROGRAMFILES"]):
-                paths.add(os.path.join(os.environ["PROGRAMFILES"], "qemu"))
-        elif sys.platform.startswith("darwin"):
-            if hasattr(sys, "frozen"):
-                # add specific locations on Mac OS X regardless of what's in $PATH
-                paths.update(["/usr/bin", "/usr/local/bin", "/opt/local/bin"])
-                try:
-                    exec_dir = os.path.dirname(os.path.abspath(sys.executable))
-                    paths.add(os.path.abspath(os.path.join(exec_dir, "qemu/bin")))
-                # If the user run the server by hand from outside
-                except FileNotFoundError:
-                    paths.add("/Applications/GNS3.app/Contents/MacOS/qemu/bin")
+                paths.add(os.path.abspath(os.path.join(exec_dir, "qemu/bin")))
+            # If the user run the server by hand from outside
+            except FileNotFoundError:
+                paths.add("/Applications/GNS3.app/Contents/MacOS/qemu/bin")
         return paths
 
     @staticmethod
@@ -150,15 +137,17 @@ class Qemu(BaseManager):
 
         qemus = []
         for path in Qemu.paths_list():
-            log.debug("Searching for Qemu binaries in '{}'".format(path))
+            log.debug(f"Searching for Qemu binaries in '{path}'")
             try:
                 for f in os.listdir(path):
-                    if (f.startswith("qemu-system") or f.startswith("qemu-kvm") or f == "qemu" or f == "qemu.exe") and \
-                            os.access(os.path.join(path, f), os.X_OK) and \
-                            os.path.isfile(os.path.join(path, f)):
+                    if (
+                        (f.startswith("qemu-system") or f.startswith("qemu-kvm") or f == "qemu" or f == "qemu.exe")
+                        and os.access(os.path.join(path, f), os.X_OK)
+                        and os.path.isfile(os.path.join(path, f))
+                    ):
                         if archs is not None:
                             for arch in archs:
-                                if f.endswith(arch) or f.endswith("{}.exe".format(arch)) or f.endswith("{}w.exe".format(arch)):
+                                if f.endswith(arch) or f.endswith(f"{arch}.exe") or f.endswith(f"{arch}w.exe"):
                                     qemu_path = os.path.join(path, f)
                                     try:
                                         version = await Qemu.get_qemu_version(qemu_path)
@@ -180,26 +169,42 @@ class Qemu(BaseManager):
         return qemus
 
     @staticmethod
-    async def img_binary_list():
+    async def create_disk_image(disk_image_path, options):
         """
-        Gets QEMU-img binaries list available on the host.
+        Create a Qemu disk (used by the controller to create empty disk images)
 
-        :returns: Array of dictionary {"path": Qemu-img binary path, "version": version of Qemu-img}
+        :param disk_image_path: disk image path
+        :param options: disk creation options
         """
-        qemu_imgs = []
-        for path in Qemu.paths_list():
-            try:
-                for f in os.listdir(path):
-                    if (f == "qemu-img" or f == "qemu-img.exe") and \
-                            os.access(os.path.join(path, f), os.X_OK) and \
-                            os.path.isfile(os.path.join(path, f)):
-                        qemu_path = os.path.join(path, f)
-                        version = await Qemu._get_qemu_img_version(qemu_path)
-                        qemu_imgs.append({"path": qemu_path, "version": version})
-            except OSError:
-                continue
 
-        return qemu_imgs
+        qemu_img_path = shutil.which("qemu-img")
+        if not qemu_img_path:
+            raise QemuError(f"Could not find qemu-img binary")
+
+        try:
+            if os.path.exists(disk_image_path):
+                raise QemuError(f"Could not create disk image '{disk_image_path}', file already exists")
+        except UnicodeEncodeError:
+            raise QemuError(
+                f"Could not create disk image '{disk_image_path}', "
+                "Disk image name contains characters not supported by the filesystem"
+            )
+
+        img_format = options.pop("format")
+        img_size = options.pop("size")
+        command = [qemu_img_path, "create", "-f", img_format]
+        for option in sorted(options.keys()):
+            command.extend(["-o", f"{option}={options[option]}"])
+        command.append(disk_image_path)
+        command.append(f"{img_size}M")
+        command_string = " ".join(shlex.quote(s) for s in command)
+        output = ""
+        try:
+            log.info(f"Executing qemu-img with: {command_string}")
+            output = await subprocess_check_output(*command, stderr=True)
+            log.info(f"Qemu disk image'{disk_image_path}' created")
+        except (OSError, subprocess.SubprocessError) as e:
+            raise QemuError(f"Could not create '{disk_image_path}' disk image: {e}\n{output}")
 
     @staticmethod
     async def get_qemu_version(qemu_path):
@@ -209,50 +214,16 @@ class Qemu(BaseManager):
         :param qemu_path: path to Qemu executable.
         """
 
-        if sys.platform.startswith("win"):
-            # Qemu on Windows doesn't return anything with parameter -version
-            # look for a version number in version.txt file in the same directory instead
-            version_file = os.path.join(os.path.dirname(qemu_path), "version.txt")
-            if os.path.isfile(version_file):
-                try:
-                    with open(version_file, "rb") as file:
-                        version = file.read().decode("utf-8").strip()
-                        match = re.search(r"[0-9\.]+", version)
-                        if match:
-                            return version
-                except (UnicodeDecodeError, OSError) as e:
-                    log.warning("could not read {}: {}".format(version_file, e))
-            return ""
-        else:
-            try:
-                output = await subprocess_check_output(qemu_path, "-version", "-nographic")
-                match = re.search("version\s+([0-9a-z\-\.]+)", output)
-                if match:
-                    version = match.group(1)
-                    return version
-                else:
-                    raise QemuError("Could not determine the Qemu version for '{}'".format(qemu_path))
-            except (OSError, subprocess.SubprocessError) as e:
-                raise QemuError("Error while looking for the Qemu version: {}".format(e))
-
-    @staticmethod
-    async def _get_qemu_img_version(qemu_img_path):
-        """
-        Gets the Qemu-img version.
-
-        :param qemu_img_path: path to Qemu-img executable.
-        """
-
         try:
-            output = await subprocess_check_output(qemu_img_path, "--version")
+            output = await subprocess_check_output(qemu_path, "-version", "-nographic")
             match = re.search(r"version\s+([0-9a-z\-\.]+)", output)
             if match:
                 version = match.group(1)
                 return version
             else:
-                raise QemuError("Could not determine the Qemu-img version for '{}'".format(qemu_img_path))
+                raise QemuError(f"Could not determine the Qemu version for {qemu_path}")
         except (OSError, subprocess.SubprocessError) as e:
-            raise QemuError("Error while looking for the Qemu-img version: {}".format(e))
+            raise QemuError(f"Error while looking for the Qemu version: {e}")
 
     @staticmethod
     async def get_swtpm_version(swtpm_path):
@@ -312,69 +283,7 @@ class Qemu(BaseManager):
         :returns: working directory name
         """
 
-        return os.path.join("qemu", "vm-{}".format(legacy_vm_id))
-
-    async def create_disk(self, qemu_img, path, options):
-        """
-        Create a Qemu disk with qemu-img
-
-        :param qemu_img: qemu-img binary path
-        :param path: Image path
-        :param options: Disk image creation options
-        """
-
-        try:
-            img_format = options.pop("format")
-            img_size = options.pop("size")
-
-            if not os.path.isabs(path):
-                directory = self.get_images_directory()
-                os.makedirs(directory, exist_ok=True)
-                path = os.path.join(directory, os.path.basename(path))
-
-            try:
-                if os.path.exists(path):
-                    raise QemuError("Could not create disk image '{}', file already exists".format(path))
-            except UnicodeEncodeError:
-                raise QemuError("Could not create disk image '{}', "
-                                "path contains characters not supported by filesystem".format(path))
-
-            command = [qemu_img, "create", "-f", img_format]
-            for option in sorted(options.keys()):
-                command.extend(["-o", "{}={}".format(option, options[option])])
-            command.append(path)
-            command.append("{}M".format(img_size))
-
-            command_string = " ".join(shlex_quote(s) for s in command)
-            log.info("Creating disk image with {}".format(command_string))
-            process = await asyncio.create_subprocess_exec(*command)
-            await process.wait()
-        except (OSError, subprocess.SubprocessError) as e:
-            raise QemuError("Could not create disk image {}:{}".format(path, e))
-
-    async def resize_disk(self, qemu_img, path, extend):
-        """
-        Resize a Qemu disk with qemu-img
-
-        :param qemu_img: qemu-img binary path
-        :param path: Image path
-        :param size: size
-        """
-
-        if not os.path.isabs(path):
-            directory = self.get_images_directory()
-            os.makedirs(directory, exist_ok=True)
-            path = os.path.join(directory, os.path.basename(path))
-
-        try:
-            if not os.path.exists(path):
-                raise QemuError("Qemu disk '{}' does not exist".format(path))
-            command = [qemu_img, "resize", path, "+{}M".format(extend)]
-            process = await asyncio.create_subprocess_exec(*command)
-            await process.wait()
-            log.info("Qemu disk '{}' extended by {} MB".format(path, extend))
-        except (OSError, subprocess.SubprocessError) as e:
-            raise QemuError("Could not update disk image {}:{}".format(path, e))
+        return os.path.join("qemu", f"vm-{legacy_vm_id}")
 
     def _init_config_disk(self):
         """
@@ -384,12 +293,12 @@ class Qemu(BaseManager):
         try:
             self.get_abs_image_path(self.config_disk)
         except (NodeError, ImageMissingError):
-            config_disk_zip = get_resource("compute/qemu/resources/{}.zip".format(self.config_disk))
+            config_disk_zip = get_resource(f"compute/qemu/resources/{self.config_disk}.zip")
             if config_disk_zip and os.path.exists(config_disk_zip):
                 directory = self.get_images_directory()
                 try:
                     unpack_zip(config_disk_zip, directory)
                 except OSError as e:
-                    log.warning("Config disk creation: {}".format(e))
+                    log.warning(f"Config disk creation: {e}")
             else:
-                log.warning("Config disk: image '{}' missing".format(self.config_disk))
+                log.warning(f"Config disk: image '{self.config_disk}' missing")

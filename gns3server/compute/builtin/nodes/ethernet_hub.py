@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 #
 # Copyright (C) 2016 GNS3 Technologies Inc.
 #
@@ -20,6 +19,7 @@ import asyncio
 from ...base_node import BaseNode
 
 import logging
+
 log = logging.getLogger(__name__)
 
 
@@ -38,11 +38,14 @@ class EthernetHub(BaseNode):
 
         super().__init__(name, node_id, project, manager)
 
-    def __json__(self):
+    def asdict(self):
 
-        return {"name": self.name,
-                "node_id": self.id,
-                "project_id": self.project.id}
+        return {
+            "name": self.name,
+            "usage": self.usage,
+            "node_id": self.id,
+            "project_id": self.project.id
+        }
 
     async def create(self):
         """
@@ -50,7 +53,7 @@ class EthernetHub(BaseNode):
         """
 
         super().create()
-        log.info('Ethernet hub "{name}" [{id}] has been created'.format(name=self._name, id=self._id))
+        log.info(f'Ethernet hub "{self._name}" [{self._id}] has been created')
 
     async def delete(self):
         """

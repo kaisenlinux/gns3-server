@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 #
 # Copyright (C) 2015 GNS3 Technologies Inc.
 #
@@ -28,11 +27,12 @@ import subprocess
 import logging
 import codecs
 import ipaddress
+import shlex
 
 from collections import OrderedDict
 from gns3server.utils.interfaces import interfaces
 from gns3server.utils.asyncio import subprocess_check_output
-from gns3server.utils import parse_version, shlex_quote
+from gns3server.utils import parse_version
 
 log = logging.getLogger(__name__)
 
@@ -54,10 +54,7 @@ class VMware(BaseManager):
         self._vmnets = []
         self._vmnets_info = {}
         self._vmnet_start_range = 2
-        if sys.platform.startswith("win"):
-            self._vmnet_end_range = 19
-        else:
-            self._vmnet_end_range = 255
+        self._vmnet_end_range = 255
 
     @property
     def vmrun_path(self):
@@ -73,6 +70,7 @@ class VMware(BaseManager):
     def _find_vmrun_registry(regkey):
 
         import winreg
+
         try:
             # default path not used, let's look in the registry
             hkey = winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, regkey)
@@ -93,17 +91,9 @@ class VMware(BaseManager):
         """
 
         # look for vmrun
-        vmrun_path = self.config.get_section_config("VMware").get("vmrun_path")
+        vmrun_path = self.config.settings.VMware.vmrun_path
         if not vmrun_path:
-            if sys.platform.startswith("win"):
-                vmrun_path = shutil.which("vmrun")
-                if vmrun_path is None:
-                    # look for vmrun.exe using the VMware Workstation directory listed in the registry
-                    vmrun_path = self._find_vmrun_registry(r"SOFTWARE\Wow6432Node\VMware, Inc.\VMware Workstation")
-                    if vmrun_path is None:
-                        # look for vmrun.exe using the VIX directory listed in the registry
-                        vmrun_path = self._find_vmrun_registry(r"SOFTWARE\Wow6432Node\VMware, Inc.\VMware VIX")
-            elif sys.platform.startswith("darwin"):
+            if sys.platform.startswith("darwin"):
                 vmrun_path = "/Applications/VMware Fusion.app/Contents/Library/vmrun"
             else:
                 vmrun_path = "vmrun"
@@ -114,11 +104,11 @@ class VMware(BaseManager):
         if not vmrun_path:
             raise VMwareError("Could not find VMware vmrun, please make sure it is installed")
         if not os.path.isfile(vmrun_path):
-            raise VMwareError("vmrun {} is not accessible".format(vmrun_path))
+            raise VMwareError(f"vmrun {vmrun_path} is not accessible")
         if not os.access(vmrun_path, os.X_OK):
             raise VMwareError("vmrun is not executable")
         if os.path.basename(vmrun_path).lower() not in ["vmrun", "vmrun.exe"]:
-            raise VMwareError("Invalid vmrun executable name {}".format(os.path.basename(vmrun_path)))
+            raise VMwareError(f"Invalid vmrun executable name {os.path.basename(vmrun_path)}")
 
         self._vmrun_path = vmrun_path
         return vmrun_path
@@ -127,6 +117,7 @@ class VMware(BaseManager):
     def _find_vmware_version_registry(regkey):
 
         import winreg
+
         version = None
         try:
             # default path not used, let's look in the registry
@@ -196,92 +187,55 @@ class VMware(BaseManager):
         Check VMware version
         """
 
-        if sys.platform.startswith("win"):
-            # look for vmrun.exe using the directory listed in the registry
-            ws_version = self._find_vmware_version_registry(r"SOFTWARE\Wow6432Node\VMware, Inc.\VMware Workstation")
-            if ws_version is None:
-                player_version = self._find_vmware_version_registry(r"SOFTWARE\Wow6432Node\VMware, Inc.\VMware Player")
-                if player_version:
-                    log.debug("VMware Player version {} detected".format(player_version))
-                    await self._check_vmware_player_requirements(player_version)
-                else:
-                    log.warning("Could not find VMware version")
-                    self._host_type = "ws"
-            else:
-                log.debug("VMware Workstation version {} detected".format(ws_version))
-                await self._check_vmware_workstation_requirements(ws_version)
-        else:
-            if sys.platform.startswith("darwin"):
-                if not os.path.isdir("/Applications/VMware Fusion.app"):
-                    raise VMwareError("VMware Fusion is not installed in the standard location /Applications/VMware Fusion.app")
-                self._host_type = "fusion"
-                return  # FIXME: no version checking on Mac OS X but we support all versions of fusion
+        if sys.platform.startswith("darwin"):
+            if not os.path.isdir("/Applications/VMware Fusion.app"):
+                raise VMwareError(
+                    "VMware Fusion is not installed in the standard location /Applications/VMware Fusion.app"
+                )
+            self._host_type = "fusion"
+            return  # FIXME: no version checking on Mac OS X but we support all versions of fusion
 
-            vmware_path = VMware._get_linux_vmware_binary()
-            if vmware_path is None:
-                raise VMwareError("VMware is not installed (vmware or vmplayer executable could not be found in $PATH)")
+        vmware_path = VMware._get_linux_vmware_binary()
+        if vmware_path is None:
+            raise VMwareError("VMware is not installed (vmware or vmplayer executable could not be found in $PATH)")
 
-            try:
-                output = await subprocess_check_output(vmware_path, "-v")
-                match = re.search(r"VMware Workstation ([0-9]+)\.", output)
-                version = None
-                if match:
-                    # VMware Workstation has been detected
-                    version = match.group(1)
-                    log.debug("VMware Workstation version {} detected".format(version))
-                    await self._check_vmware_workstation_requirements(version)
-                match = re.search(r"VMware Player ([0-9]+)\.", output)
-                if match:
-                    # VMware Player has been detected
-                    version = match.group(1)
-                    log.debug("VMware Player version {} detected".format(version))
-                    await self._check_vmware_player_requirements(version)
-                if version is None:
-                    log.warning("Could not find VMware version. Output of VMware: {}".format(output))
-                    raise VMwareError("Could not find VMware version. Output of VMware: {}".format(output))
-            except (OSError, subprocess.SubprocessError) as e:
-                log.error("Error while looking for the VMware version: {}".format(e))
-                raise VMwareError("Error while looking for the VMware version: {}".format(e))
-
-    @staticmethod
-    def _get_vmnet_interfaces_registry():
-
-        import winreg
-        vmnet_interfaces = []
-        regkey = r"SOFTWARE\Wow6432Node\VMware, Inc.\VMnetLib\VMnetConfig"
         try:
-            hkey = winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, regkey)
-            for index in range(winreg.QueryInfoKey(hkey)[0]):
-                vmnet = winreg.EnumKey(hkey, index)
-                hkeyvmnet = winreg.OpenKey(hkey, vmnet)
-                if winreg.QueryInfoKey(hkeyvmnet)[1]:
-                    # the vmnet has not been configure if the key has no values
-                    vmnet = vmnet.replace("vm", "VM")
-                    if vmnet not in ("VMnet0", "VMnet1", "VMnet8"):
-                        vmnet_interfaces.append(vmnet)
-                winreg.CloseKey(hkeyvmnet)
-            winreg.CloseKey(hkey)
-        except OSError as e:
-            raise VMwareError("Could not read registry key {}: {}".format(regkey, e))
-        return vmnet_interfaces
+            output = await subprocess_check_output(vmware_path, "-v")
+            match = re.search(r"VMware Workstation ([0-9]+)\.", output)
+            version = None
+            if match:
+                # VMware Workstation has been detected
+                version = match.group(1)
+                log.debug(f"VMware Workstation version {version} detected")
+                await self._check_vmware_workstation_requirements(version)
+            match = re.search(r"VMware Player ([0-9]+)\.", output)
+            if match:
+                # VMware Player has been detected
+                version = match.group(1)
+                log.debug(f"VMware Player version {version} detected")
+                await self._check_vmware_player_requirements(version)
+            if version is None:
+                log.warning(f"Could not find VMware version. Output of VMware: {output}")
+                raise VMwareError(f"Could not find VMware version. Output of VMware: {output}")
+        except (OSError, subprocess.SubprocessError) as e:
+            log.error(f"Error while looking for the VMware version: {e}")
+            raise VMwareError(f"Error while looking for the VMware version: {e}")
 
     @staticmethod
     def _get_vmnet_interfaces():
 
-        if sys.platform.startswith("win"):
-            return VMware._get_vmnet_interfaces_registry()
-        elif sys.platform.startswith("darwin"):
+        if sys.platform.startswith("darwin"):
             vmware_networking_file = "/Library/Preferences/VMware Fusion/networking"
         else:
             # location on Linux
             vmware_networking_file = "/etc/vmware/networking"
         vmnet_interfaces = {}
         try:
-            with open(vmware_networking_file, "r", encoding="utf-8") as f:
+            with open(vmware_networking_file, encoding="utf-8") as f:
                 for line in f.read().splitlines():
                     match = re.search(r"VNET_([0-9]+)_VIRTUAL_ADAPTER", line)
                     if match:
-                        vmnet = "vmnet{}".format(match.group(1))
+                        vmnet = f"vmnet{match.group(1)}"
                         if vmnet not in ("vmnet0", "vmnet1", "vmnet8"):
                             vmnet_interfaces[vmnet] = {}
             with open(vmware_networking_file, "r", encoding="utf-8") as f:
@@ -298,7 +252,7 @@ class VMware(BaseManager):
                             vmnet_interfaces[vmnet]["netmask"] = match.group(2)
 
         except OSError as e:
-            raise VMwareError("Cannot open {}: {}".format(vmware_networking_file, e))
+            raise VMwareError(f"Cannot open {vmware_networking_file}: {e}")
         return vmnet_interfaces
 
     @staticmethod
@@ -306,17 +260,7 @@ class VMware(BaseManager):
 
         vmnet_interfaces = []
         for interface in interfaces():
-            if sys.platform.startswith("win"):
-                if "netcard" in interface:
-                    windows_name = interface["netcard"]
-                else:
-                    windows_name = interface["name"]
-                match = re.search(r"(VMnet[0-9]+)", windows_name)
-                if match:
-                    vmnet = match.group(1)
-                    if vmnet not in ("VMnet0", "VMnet1", "VMnet8"):
-                        vmnet_interfaces.append(vmnet)
-            elif interface["name"].startswith("vmnet"):
+            if interface["name"].startswith("vmnet"):
                 vmnet = interface["name"]
                 if vmnet not in ("vmnet0", "vmnet1", "vmnet8"):
                     vmnet_interfaces.append(interface["name"])
@@ -324,8 +268,8 @@ class VMware(BaseManager):
 
     def is_managed_vmnet(self, vmnet):
 
-        self._vmnet_start_range = self.config.get_section_config("VMware").getint("vmnet_start_range", self._vmnet_start_range)
-        self._vmnet_end_range = self.config.get_section_config("VMware").getint("vmnet_end_range", self._vmnet_end_range)
+        self._vmnet_start_range = self.config.settings.VMware.vmnet_start_range
+        self._vmnet_end_range = self.config.settings.VMware.vmnet_end_range
         match = re.search(r"vmnet([0-9]+)$", vmnet, re.IGNORECASE)
         if match:
             vmnet_number = match.group(1)
@@ -336,7 +280,9 @@ class VMware(BaseManager):
     def allocate_vmnet(self):
 
         if not self._vmnets:
-            raise VMwareError("No VMnet interface available between vmnet{} and vmnet{}. Go to preferences VMware / Network / Configure to add more interfaces.".format(self._vmnet_start_range, self._vmnet_end_range))
+            raise VMwareError(
+                f"No VMnet interface available between vmnet{self._vmnet_start_range} and vmnet{self._vmnet_end_range}. Go to preferences VMware / Network / Configure to add more interfaces."
+            )
         return self._vmnets.pop(0)
 
     def find_bridge_interface(self, vmnet_interface):
@@ -375,7 +321,7 @@ class VMware(BaseManager):
         for vmware_vm in self._nodes.values():
             for used_vmnet in vmware_vm.vmnets:
                 if used_vmnet in vmnet_interfaces:
-                    log.debug("{} is already in use".format(used_vmnet))
+                    log.debug(f"{used_vmnet} is already in use")
                     vmnet_interfaces.remove(used_vmnet)
 
         # remove vmnets that are not managed
@@ -404,12 +350,12 @@ class VMware(BaseManager):
 
         while True:
             try:
-                return (await self._execute(subcommand, args, timeout=timeout, log_level=log_level))
+                return await self._execute(subcommand, args, timeout=timeout, log_level=log_level)
             except VMwareError as e:
                 # We can fail to detect that it's VMware player instead of Workstation (due to marketing change Player is now Player Workstation)
                 if self.host_type == "ws" and "VIX_SERVICEPROVIDER_VMWARE_WORKSTATION" in str(e):
                     self._host_type = "player"
-                    return (await self._execute(subcommand, args, timeout=timeout, log_level=log_level))
+                    return await self._execute(subcommand, args, timeout=timeout, log_level=log_level)
                 else:
                     if trial <= 0:
                         raise e
@@ -426,22 +372,28 @@ class VMware(BaseManager):
 
         command = [vmrun_path, "-T", self.host_type, subcommand]
         command.extend(args)
-        command_string = " ".join([shlex_quote(c) for c in command])
-        log.log(log_level, "Executing vmrun with command: {}".format(command_string))
+        command_string = " ".join([shlex.quote(c) for c in command])
+        log.log(log_level, f"Executing vmrun with command: {command_string}")
         try:
-            process = await asyncio.create_subprocess_exec(*command, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+            process = await asyncio.create_subprocess_exec(
+                *command, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+            )
         except (OSError, subprocess.SubprocessError) as e:
-            raise VMwareError("Could not execute vmrun: {}".format(e))
+            raise VMwareError(f"Could not execute vmrun: {e}")
 
         try:
             stdout_data, _ = await asyncio.wait_for(process.communicate(), timeout=timeout)
         except asyncio.TimeoutError:
-            raise VMwareError("vmrun has timed out after {} seconds!\nTry to run {} in a terminal to see more details.\n\nMake sure GNS3 and VMware run under the same user and whitelist vmrun.exe in your antivirus.".format(timeout, command_string))
+            raise VMwareError(
+                f"vmrun has timed out after {timeout} seconds!\nTry to run {command_string} in a terminal to see more details.\n\nMake sure GNS3 and VMware run under the same user and whitelist vmrun.exe in your antivirus."
+            )
 
         if process.returncode:
             # vmrun print errors on stdout
             vmrun_error = stdout_data.decode("utf-8", errors="ignore")
-            raise VMwareError("vmrun has returned an error: {}\nTry to run {} in a terminal to see more details.\nAnd make sure GNS3 and VMware run under the same user.".format(vmrun_error, command_string))
+            raise VMwareError(
+                f"vmrun has returned an error: {vmrun_error}\nTry to run {command_string} in a terminal to see more details.\nAnd make sure GNS3 and VMware run under the same user."
+            )
 
         return stdout_data.decode("utf-8", errors="ignore").splitlines()
 
@@ -467,15 +419,15 @@ class VMware(BaseManager):
             version = None
             if match:
                 version = match.group(1)
-                log.debug("VMware vmrun version {} detected, minimum required: {}".format(version, minimum_required_version))
+                log.debug(f"VMware vmrun version {version} detected, minimum required: {minimum_required_version}")
                 if parse_version(version) < parse_version(minimum_required_version):
-                    raise VMwareError("VMware vmrun executable version must be >= version {}".format(minimum_required_version))
+                    raise VMwareError(f"VMware vmrun executable version must be >= version {minimum_required_version}")
             if version is None:
-                log.warning("Could not find VMware vmrun version. Output: {}".format(output))
-                raise VMwareError("Could not find VMware vmrun version. Output: {}".format(output))
+                log.warning(f"Could not find VMware vmrun version. Output: {output}")
+                raise VMwareError(f"Could not find VMware vmrun version. Output: {output}")
         except (OSError, subprocess.SubprocessError) as e:
-            log.error("Error while looking for the VMware vmrun version: {}".format(e))
-            raise VMwareError("Error while looking for the VMware vmrun version: {}".format(e))
+            log.error(f"Error while looking for the VMware vmrun version: {e}")
+            raise VMwareError(f"Error while looking for the VMware vmrun version: {e}")
 
     async def remove_from_vmware_inventory(self, vmx_path):
         """
@@ -490,7 +442,7 @@ class VMware(BaseManager):
                 try:
                     inventory_pairs = self.parse_vmware_file(inventory_path)
                 except OSError as e:
-                    log.warning('Could not read VMware inventory file "{}": {}'.format(inventory_path, e))
+                    log.warning(f'Could not read VMware inventory file "{inventory_path}": {e}')
                     return
 
                 vmlist_entry = None
@@ -507,7 +459,7 @@ class VMware(BaseManager):
                 try:
                     self.write_vmware_file(inventory_path, inventory_pairs)
                 except OSError as e:
-                    raise VMwareError('Could not write VMware inventory file "{}": {}'.format(inventory_path, e))
+                    raise VMwareError(f'Could not write VMware inventory file "{inventory_path}": {e}')
 
     @staticmethod
     def parse_vmware_file(path):
@@ -528,22 +480,22 @@ class VMware(BaseManager):
                 # skip the shebang
                 line = f.readline().decode(encoding, errors="ignore")
             try:
-                key, value = line.split('=', 1)
+                key, value = line.split("=", 1)
                 if key.strip().lower() == ".encoding":
                     file_encoding = value.strip('" ')
                     try:
                         codecs.lookup(file_encoding)
                         encoding = file_encoding
                     except LookupError:
-                        log.warning("Invalid file encoding detected in '{}': {}".format(path, file_encoding))
+                        log.warning(f"Invalid file encoding detected in '{path}': {file_encoding}")
             except ValueError:
-                log.warning("Couldn't find file encoding in {}, using {}...".format(path, encoding))
+                log.warning(f"Couldn't find file encoding in {path}, using {encoding}...")
 
         # read the file with the correct encoding
         with open(path, encoding=encoding, errors="ignore") as f:
             for line in f.read().splitlines():
                 try:
-                    key, value = line.split('=', 1)
+                    key, value = line.split("=", 1)
                     pairs[key.strip().lower()] = value.strip('" ')
                 except ValueError:
                     continue
@@ -565,10 +517,10 @@ class VMware(BaseManager):
                 codecs.lookup(file_encoding)
                 encoding = file_encoding
             except LookupError:
-                log.warning("Invalid file encoding detected in '{}': {}".format(path, file_encoding))
+                log.warning(f"Invalid file encoding detected in '{path}': {file_encoding}")
         with open(path, "w", encoding=encoding, errors="ignore") as f:
             for key, value in pairs.items():
-                entry = '{} = "{}"\n'.format(key, value)
+                entry = f'{key} = "{value}"\n'
                 f.write(entry)
 
     @staticmethod
@@ -587,15 +539,15 @@ class VMware(BaseManager):
                 codecs.lookup(file_encoding)
                 encoding = file_encoding
             except LookupError:
-                log.warning("Invalid file encoding detected in '{}': {}".format(path, file_encoding))
+                log.warning(f"Invalid file encoding detected in '{path}': {file_encoding}")
         with open(path, "w", encoding=encoding, errors="ignore") as f:
             if sys.platform.startswith("linux"):
                 # write the shebang on the first line on Linux
                 vmware_path = VMware._get_linux_vmware_binary()
                 if vmware_path:
-                    f.write("#!{}\n".format(vmware_path))
+                    f.write(f"#!{vmware_path}\n")
             for key, value in pairs.items():
-                entry = '{} = "{}"\n'.format(key, value)
+                entry = f'{key} = "{value}"\n'
                 f.write(entry)
 
     def _get_vms_from_inventory(self, inventory_path):
@@ -609,25 +561,29 @@ class VMware(BaseManager):
 
         vm_entries = {}
         vmware_vms = []
-        log.info('Searching for VMware VMs in inventory file "{}"'.format(inventory_path))
+        log.info(f'Searching for VMware VMs in inventory file "{inventory_path}"')
         try:
             pairs = self.parse_vmware_file(inventory_path)
             for key, value in pairs.items():
                 if key.startswith("vmlist"):
                     try:
-                        vm_entry, variable_name = key.split('.', 1)
+                        vm_entry, variable_name = key.split(".", 1)
                     except ValueError:
                         continue
                     if vm_entry not in vm_entries:
                         vm_entries[vm_entry] = {}
                     vm_entries[vm_entry][variable_name.strip()] = value
         except OSError as e:
-            log.warning("Could not read VMware inventory file {}: {}".format(inventory_path, e))
+            log.warning(f"Could not read VMware inventory file {inventory_path}: {e}")
 
         for vm_settings in vm_entries.values():
             if "displayname" in vm_settings and "config" in vm_settings:
                 if os.path.exists(vm_settings["config"]):
-                    log.debug('Found VM named "{}" with VMX file "{}"'.format(vm_settings["displayname"], vm_settings["config"]))
+                    log.debug(
+                        'Found VM named "{}" with VMX file "{}"'.format(
+                            vm_settings["displayname"], vm_settings["config"]
+                        )
+                    )
                     vmware_vms.append({"vmname": vm_settings["displayname"], "vmx_path": vm_settings["config"]})
         return vmware_vms
 
@@ -641,19 +597,19 @@ class VMware(BaseManager):
         """
 
         vmware_vms = []
-        log.info('Searching for VMware VMs in directory "{}"'.format(directory))
+        log.info(f'Searching for VMware VMs in directory "{directory}"')
         for path, _, filenames in os.walk(directory):
             for filename in filenames:
                 if os.path.splitext(filename)[1] == ".vmx":
                     vmx_path = os.path.join(path, filename)
-                    log.debug('Reading VMware VMX file "{}"'.format(vmx_path))
+                    log.debug(f'Reading VMware VMX file "{vmx_path}"')
                     try:
                         pairs = self.parse_vmware_file(vmx_path)
                         if "displayname" in pairs:
                             log.debug('Found VM named "{}"'.format(pairs["displayname"]))
                             vmware_vms.append({"vmname": pairs["displayname"], "vmx_path": vmx_path})
                     except OSError as e:
-                        log.warning('Could not read VMware VMX file "{}": {}'.format(vmx_path, e))
+                        log.warning(f'Could not read VMware VMX file "{vmx_path}": {e}')
                         continue
         return vmware_vms
 
@@ -665,9 +621,7 @@ class VMware(BaseManager):
         :returns: path to the inventory file
         """
 
-        if sys.platform.startswith("win"):
-            return os.path.expandvars(r"%APPDATA%\Vmware\Inventory.vmls")
-        elif sys.platform.startswith("darwin"):
+        if sys.platform.startswith("darwin"):
             return os.path.expanduser("~/Library/Application Support/VMware Fusion/vmInventory")
         else:
             return os.path.expanduser("~/.vmware/inventory.vmls")
@@ -680,9 +634,7 @@ class VMware(BaseManager):
         :returns: path to the preferences file
         """
 
-        if sys.platform.startswith("win"):
-            return os.path.expandvars(r"%APPDATA%\VMware\preferences.ini")
-        elif sys.platform.startswith("darwin"):
+        if sys.platform.startswith("darwin"):
             return os.path.expanduser("~/Library/Preferences/VMware Fusion/preferences")
         else:
             return os.path.expanduser("~/.vmware/preferences")
@@ -695,14 +647,7 @@ class VMware(BaseManager):
         :returns: path to the default VM directory
         """
 
-        if sys.platform.startswith("win"):
-            import ctypes
-            import ctypes.wintypes
-            path = ctypes.create_unicode_buffer(ctypes.wintypes.MAX_PATH)
-            ctypes.windll.shell32.SHGetFolderPathW(None, 5, None, 0, path)
-            documents_folder = path.value
-            return ['{}\My Virtual Machines'.format(documents_folder), '{}\Virtual Machines'.format(documents_folder)]
-        elif sys.platform.startswith("darwin"):
+        if sys.platform.startswith("darwin"):
             return [os.path.expanduser("~/Documents/Virtual Machines.localized")]
         else:
             return [os.path.expanduser("~/vmware")]
@@ -728,12 +673,15 @@ class VMware(BaseManager):
                 try:
                     pairs = self.parse_vmware_file(vmware_preferences_path)
                 except OSError as e:
-                    log.warning('Could not read VMware preferences file "{}": {}'.format(vmware_preferences_path, e))
+                    log.warning(f'Could not read VMware preferences file "{vmware_preferences_path}": {e}')
                 if "prefvmx.defaultvmpath" in pairs:
                     default_vm_path = pairs["prefvmx.defaultvmpath"]
                     if not os.path.isdir(default_vm_path):
-                        raise VMwareError('Could not find or access the default VM directory: "{default_vm_path}". Please change "prefvmx.defaultvmpath={default_vm_path}" in "{vmware_preferences_path}"'.format(default_vm_path=default_vm_path,
-                                                                                                                                                                                                                  vmware_preferences_path=vmware_preferences_path))
+                        raise VMwareError(
+                            'Could not find or access the default VM directory: "{default_vm_path}". Please change "prefvmx.defaultvmpath={default_vm_path}" in "{vmware_preferences_path}"'.format(
+                                default_vm_path=default_vm_path, vmware_preferences_path=vmware_preferences_path
+                            )
+                        )
                     vmware_vms = self._get_vms_from_directory(default_vm_path)
 
             if not vmware_vms:
@@ -748,9 +696,9 @@ class VMware(BaseManager):
 
             # look for VMX paths in the preferences file in case not all VMs are in a default directory
             for key, value in pairs.items():
-                m = re.match(r'pref.mruVM(\d+)\.filename', key)
+                m = re.match(r"pref.mruVM(\d+)\.filename", key)
                 if m:
-                    display_name = "pref.mruVM{}.displayName".format(m.group(1))
+                    display_name = f"pref.mruVM{m.group(1)}.displayName"
                     if display_name in pairs:
                         found = False
                         for vmware_vm in vmware_vms:
@@ -771,7 +719,7 @@ class VMware(BaseManager):
         return path
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     loop = asyncio.get_event_loop()
     vmware = VMware.instance()
     loop.run_until_complete(asyncio.ensure_future(vmware.check_vmware_version()))

@@ -15,11 +15,11 @@
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-import os
-import aiohttp
+import asyncio
 from contextlib import contextmanager
 
-from ..notification_queue import NotificationQueue
+from gns3server.utils.notification_queue import NotificationQueue
+from .controller_error import ControllerError
 
 
 class Notification:
@@ -28,9 +28,10 @@ class Notification:
     """
 
     def __init__(self, controller):
+
         self._controller = controller
         self._project_listeners = {}
-        self._controller_listeners = []
+        self._controller_listeners = set()
 
     @contextmanager
     def project_queue(self, project_id):
@@ -39,6 +40,7 @@ class Notification:
 
         Use it with Python with
         """
+
         queue = NotificationQueue()
         self._project_listeners.setdefault(project_id, set())
         self._project_listeners[project_id].add(queue)
@@ -54,8 +56,9 @@ class Notification:
 
         Use it with Python with
         """
+
         queue = NotificationQueue()
-        self._controller_listeners.append(queue)
+        self._controller_listeners.add(queue)
         try:
             yield queue
         finally:
@@ -69,20 +72,8 @@ class Notification:
         :param event: Event to send
         """
 
-        # If use in tests for documentation we save a sample
-        if os.environ.get("PYTEST_BUILD_DOCUMENTATION") == "1":
-            os.makedirs("docs/api/notifications", exist_ok=True)
-            try:
-                import json
-                data = json.dumps(event, indent=4, sort_keys=True)
-                if "MagicMock" not in data:
-                    with open(os.path.join("docs/api/notifications", action + ".json"), 'w+') as f:
-                        f.write(data)
-            except TypeError:  # If we receive a mock as an event it will raise TypeError when using json dump
-                pass
-
         for controller_listener in self._controller_listeners:
-            controller_listener.put_nowait((action, event, {}))
+            asyncio.get_running_loop().call_soon_threadsafe(controller_listener.put_nowait, (action, event, {}))
 
     def project_has_listeners(self, project_id):
         """
@@ -100,19 +91,19 @@ class Notification:
         :param event: Event to send
         :param compute_id: Compute id of the sender
         """
+
         if action == "node.updated":
             try:
                 # Update controller node data and send the event node.updated
                 project = self._controller.get_project(event["project_id"])
                 node = project.get_node(event["node_id"])
                 await node.parse_node_response(event)
-
-                self.project_emit("node.updated", node.__json__())
-            except (aiohttp.web.HTTPNotFound, aiohttp.web.HTTPForbidden):  # Project closing
+                self.project_emit("node.updated", node.asdict())
+            except ControllerError:  # Project closing
                 return
         elif action == "ping":
-             event["compute_id"] = compute_id
-             self.project_emit(action, event)
+            event["compute_id"] = compute_id
+            self.project_emit(action, event)
         else:
             self.project_emit(action, event, project_id)
 
@@ -123,18 +114,6 @@ class Notification:
         :param action: Action name
         :param event: Event to send
         """
-
-        # If use in tests for documentation we save a sample
-        if os.environ.get("PYTEST_BUILD_DOCUMENTATION") == "1":
-            os.makedirs("docs/api/notifications", exist_ok=True)
-            try:
-                import json
-                data = json.dumps(event, indent=4, sort_keys=True)
-                if "MagicMock" not in data:
-                    with open(os.path.join("docs/api/notifications", action + ".json"), 'w+') as f:
-                        f.write(data)
-            except TypeError:  # If we receive a mock as an event it will raise TypeError when using json dump
-                pass
 
         if "project_id" in event or project_id:
             self._send_event_to_project(event.get("project_id", project_id), action, event)
@@ -155,7 +134,7 @@ class Notification:
         except KeyError:
             return
         for listener in project_listeners:
-            listener.put_nowait((action, event, {}))
+            asyncio.get_running_loop().call_soon_threadsafe(listener.put_nowait, (action, event, {}))
 
     def _send_event_to_all_projects(self, action, event):
         """
@@ -167,4 +146,4 @@ class Notification:
         """
         for project_listeners in self._project_listeners.values():
             for listener in project_listeners:
-                listener.put_nowait((action, event, {}))
+                asyncio.get_running_loop().call_soon_threadsafe(listener.put_nowait, (action, event, {}))

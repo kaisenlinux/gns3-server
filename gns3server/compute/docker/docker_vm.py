@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 #
 # Copyright (C) 2015 GNS3 Technologies Inc.
 #
@@ -34,19 +33,18 @@ from gns3server.utils.asyncio.raw_command_server import AsyncioRawCommandServer
 from gns3server.utils.asyncio import wait_for_file_creation
 from gns3server.utils.asyncio import monitor_process
 from gns3server.utils.get_resource import get_resource
+from gns3server.utils.hostname import is_rfc1123_hostname_valid
+from gns3server.utils import macaddress_to_int, int_to_macaddress
 
-from gns3server.ubridge.ubridge_error import UbridgeError, UbridgeNamespaceError
+from gns3server.compute.ubridge.ubridge_error import UbridgeError, UbridgeNamespaceError
 from ..base_node import BaseNode
 
 from ..adapters.ethernet_adapter import EthernetAdapter
 from ..nios.nio_udp import NIOUDP
-from .docker_error import (
-    DockerError,
-    DockerHttp304Error,
-    DockerHttp404Error
-)
+from .docker_error import DockerError, DockerHttp304Error, DockerHttp404Error
 
 import logging
+
 log = logging.getLogger(__name__)
 
 
@@ -60,8 +58,9 @@ class DockerVM(BaseNode):
     :param manager: Manager instance
     :param image: Docker image
     :param console: TCP console port
-    :param console_type: Console type
+    :param console_type: console type
     :param aux: TCP aux console port
+    :param aux_type: auxiliary console type
     :param console_resolution: Resolution of the VNC display
     :param console_http_port: Port to redirect HTTP queries
     :param console_http_path: Url part with the path of the web interface
@@ -69,15 +68,40 @@ class DockerVM(BaseNode):
     :param extra_volumes: Additional directories to make persistent
     """
 
-    def __init__(self, name, node_id, project, manager, image, console=None, aux=None, start_command=None,
-                 adapters=None, environment=None, console_type="telnet", console_resolution="1024x768",
-                 console_http_port=80, console_http_path="/", extra_hosts=None, extra_volumes=[]):
+    def __init__(
+        self,
+        name,
+        node_id,
+        project,
+        manager,
+        image,
+        console=None,
+        aux=None,
+        start_command=None,
+        adapters=None,
+        mac_address="",
+        environment=None,
+        console_type="telnet",
+        aux_type="none",
+        console_resolution="1024x768",
+        console_http_port=80,
+        console_http_path="/",
+        extra_hosts=None,
+        extra_volumes=[],
+        memory=0,
+        cpus=0,
+    ):
 
-        super().__init__(name, node_id, project, manager, console=console, aux=aux, allocate_aux=True, console_type=console_type)
+        if not is_rfc1123_hostname_valid(name):
+            raise DockerError(f"'{name}' is an invalid name to create a Docker node")
+
+        super().__init__(
+            name, node_id, project, manager, console=console, console_type=console_type, aux=aux, aux_type=aux_type
+        )
 
         # force the latest image if no version is specified
         if ":" not in image:
-            image = "{}:latest".format(image)
+            image = f"{image}:latest"
         self._image = image
         self._start_command = start_command
         self._environment = environment
@@ -93,6 +117,8 @@ class DockerVM(BaseNode):
         self._console_websocket = None
         self._extra_hosts = extra_hosts
         self._extra_volumes = extra_volumes or []
+        self._memory = memory
+        self._cpus = cpus
         self._permissions_fixed = True
         self._display = None
         self._closing = False
@@ -106,11 +132,15 @@ class DockerVM(BaseNode):
         else:
             self.adapters = adapters
 
-        log.debug("{module}: {name} [{image}] initialized.".format(module=self.manager.module_name,
-                                                                   name=self.name,
-                                                                   image=self._image))
+        self.mac_address = mac_address
 
-    def __json__(self):
+        log.debug(
+            "{module}: {name} [{image}] initialized.".format(
+                module=self.manager.module_name, name=self.name, image=self._image
+            )
+        )
+
+    def asdict(self):
         return {
             "name": self._name,
             "usage": self.usage,
@@ -119,18 +149,22 @@ class DockerVM(BaseNode):
             "project_id": self._project.id,
             "image": self._image,
             "adapters": self.adapters,
+            "mac_address": self.mac_address,
             "console": self.console,
             "console_type": self.console_type,
             "console_resolution": self.console_resolution,
             "console_http_port": self.console_http_port,
             "console_http_path": self.console_http_path,
             "aux": self.aux,
+            "aux_type": self.aux_type,
             "start_command": self.start_command,
             "status": self.status,
             "environment": self.environment,
             "node_directory": self.working_path,
             "extra_hosts": self.extra_hosts,
             "extra_volumes": self.extra_volumes,
+            "memory": self.memory,
+            "cpus": self.cpus,
         }
 
     def _get_free_display_port(self):
@@ -141,13 +175,55 @@ class DockerVM(BaseNode):
         if not os.path.exists("/tmp/.X11-unix/"):
             return display
         while True:
-            if not os.path.exists("/tmp/.X11-unix/X{}".format(display)):
+            if not os.path.exists(f"/tmp/.X11-unix/X{display}"):
                 return display
             display += 1
+
+    @BaseNode.name.setter
+    def name(self, new_name):
+        """
+        Sets the name of this Qemu VM.
+
+        :param new_name: name
+        """
+
+        if not is_rfc1123_hostname_valid(new_name):
+            raise DockerError(f"'{new_name}' is an invalid name to rename Docker container '{self._name}'")
+        super(DockerVM, DockerVM).name.__set__(self, new_name)
 
     @property
     def ethernet_adapters(self):
         return self._ethernet_adapters
+
+    @property
+    def mac_address(self):
+        """
+        Returns the MAC address for this Docker container.
+
+        :returns: adapter type (string)
+        """
+
+        return self._mac_address
+
+    @mac_address.setter
+    def mac_address(self, mac_address):
+        """
+        Sets the MAC address for this Docker container.
+
+        :param mac_address: MAC address
+        """
+
+        if not mac_address:
+            # use the node UUID to generate a random MAC address
+            self._mac_address = "02:42:%s:%s:%s:00" % (self.id[2:4], self.id[4:6], self.id[6:8])
+        else:
+            self._mac_address = mac_address
+
+        log.info('Docker container "{name}" [{id}]: MAC address changed to {mac_addr}'.format(
+            name=self._name,
+            id=self._id,
+            mac_addr=self._mac_address)
+        )
 
     @property
     def start_command(self):
@@ -210,6 +286,22 @@ class DockerVM(BaseNode):
     def extra_volumes(self, extra_volumes):
         self._extra_volumes = extra_volumes
 
+    @property
+    def memory(self):
+        return self._memory
+
+    @memory.setter
+    def memory(self, memory):
+        self._memory = memory
+
+    @property
+    def cpus(self):
+        return self._cpus
+
+    @cpus.setter
+    def cpus(self, cpus):
+        self._cpus = cpus
+
     async def _get_container_state(self):
         """
         Returns the container state (e.g. running, paused etc.)
@@ -219,7 +311,7 @@ class DockerVM(BaseNode):
         """
 
         try:
-            result = await self.manager.query("GET", "containers/{}/json".format(self._cid))
+            result = await self.manager.query("GET", f"containers/{self._cid}/json")
         except DockerError:
             return "exited"
 
@@ -234,7 +326,7 @@ class DockerVM(BaseNode):
         :returns: Dictionary information about the container image
         """
 
-        result = await self.manager.query("GET", "images/{}/json".format(self._image))
+        result = await self.manager.query("GET", f"images/{self._image}/json")
         return result
 
     def _mount_binds(self, image_info):
@@ -248,19 +340,26 @@ class DockerVM(BaseNode):
             raise DockerError(f"Cannot access resources: {e}")
 
         log.info(f'Mount resources from "{resources_path}"')
-        binds = ["{}:/gns3:ro".format(resources_path)]
+        binds = [{
+            "Type": "bind",
+            "Source": resources_path,
+            "Target": "/gns3",
+            "ReadOnly": True
+        }]
 
         # We mount our own etc/network
         try:
             self._create_network_config()
         except OSError as e:
-            raise DockerError("Could not create network config in the container: {}".format(e))
+            raise DockerError(f"Could not create network config in the container: {e}")
         volumes = ["/etc/network"]
 
         volumes.extend((image_info.get("Config", {}).get("Volumes") or {}).keys())
         for volume in self._extra_volumes:
             if not volume.strip() or volume[0] != "/" or volume.find("..") >= 0:
-                raise DockerError("Persistent volume '{}' has invalid format. It must start with a '/' and not contain '..'.".format(volume))
+                raise DockerError(
+                    f"Persistent volume '{volume}' has invalid format. It must start with a '/' and not contain '..'."
+                )
         volumes.extend(self._extra_volumes)
 
         self._volumes = []
@@ -271,13 +370,17 @@ class DockerVM(BaseNode):
             # remove any mount that is equal or more specific, then append this one
             self._volumes = list(filter(lambda v: not generalises(volume, v), self._volumes))
             # if there is nothing more general, append this mount
-            if not [ v for v in self._volumes if generalises(v, volume) ] :
+            if not [v for v in self._volumes if generalises(v, volume)]:
                 self._volumes.append(volume)
 
         for volume in self._volumes:
             source = os.path.join(self.working_dir, os.path.relpath(volume, "/"))
             os.makedirs(source, exist_ok=True)
-            binds.append("{}:/gns3volumes{}".format(source, volume))
+            binds.append({
+                "Type": "bind",
+                "Source": source,
+                "Target": "/gns3volumes{}".format(volume)
+            })
 
         return binds
 
@@ -287,7 +390,7 @@ class DockerVM(BaseNode):
         """
         path = os.path.join(self.working_dir, "etc", "network")
         os.makedirs(path, exist_ok=True)
-        open(os.path.join(path, ".gns3_perms"), 'a').close()
+        open(os.path.join(path, ".gns3_perms"), "a").close()
         os.makedirs(os.path.join(path, "if-up.d"), exist_ok=True)
         os.makedirs(os.path.join(path, "if-down.d"), exist_ok=True)
         os.makedirs(os.path.join(path, "if-pre-up.d"), exist_ok=True)
@@ -304,7 +407,8 @@ class DockerVM(BaseNode):
 # source /etc/network/interfaces.d/*
 """)
                 for adapter in range(0, self.adapters):
-                    f.write("""
+                    f.write(
+                        """
 # Static config for eth{adapter}
 #auto eth{adapter}
 #iface eth{adapter} inet static
@@ -328,15 +432,24 @@ class DockerVM(BaseNode):
         if ":" in os.path.splitdrive(self.working_dir)[1]:
             raise DockerError("Cannot create a Docker container with a project directory containing a colon character (':')")
 
+        #await self.manager.install_resources()
+
         try:
             image_infos = await self._get_image_information()
         except DockerHttp404Error:
-            log.info("Image '{}' is missing, pulling it from Docker hub...".format(self._image))
+            log.info(f"Image '{self._image}' is missing, pulling it from Docker hub...")
             await self.pull_image(self._image)
             image_infos = await self._get_image_information()
 
         if image_infos is None:
-            raise DockerError("Cannot get information for image '{}', please try again.".format(self._image))
+            raise DockerError(f"Cannot get information for image '{self._image}', please try again.")
+
+        available_cpus = psutil.cpu_count(logical=True)
+        if self._cpus > available_cpus:
+            raise DockerError(
+                f"You have allocated too many CPUs for the Docker container "
+                f"(max available is {available_cpus} CPUs)"
+            )
 
         params = {
             "Hostname": self._name,
@@ -348,12 +461,15 @@ class DockerVM(BaseNode):
             "HostConfig": {
                 "CapAdd": ["ALL"],
                 "Privileged": True,
-                "Binds": self._mount_binds(image_infos),
+                "Mounts": self._mount_binds(image_infos),
+                "Memory": self._memory * (1024 * 1024),  # convert memory to bytes
+                "NanoCpus": int(self._cpus * 1e9),  # convert cpus to nano cpus
+                "UsernsMode": "host"
             },
             "Volumes": {},
             "Env": ["container=docker"],  # Systemd compliant: https://github.com/GNS3/gns3-server/issues/573
             "Cmd": [],
-            "Entrypoint": image_infos.get("Config", {"Entrypoint": []}).get("Entrypoint")
+            "Entrypoint": image_infos.get("Config", {"Entrypoint": []}).get("Entrypoint"),
         }
 
         if params["Entrypoint"] is None:
@@ -362,7 +478,7 @@ class DockerVM(BaseNode):
             try:
                 params["Cmd"] = shlex.split(self._start_command)
             except ValueError as e:
-                raise DockerError("Invalid start command '{}': {}".format(self._start_command, e))
+                raise DockerError(f"Invalid start command '{self._start_command}': {e}")
         if len(params["Cmd"]) == 0:
             params["Cmd"] = image_infos.get("Config", {"Cmd": []}).get("Cmd")
             if params["Cmd"] is None:
@@ -372,7 +488,7 @@ class DockerVM(BaseNode):
         params["Entrypoint"].insert(0, "/gns3/init.sh")  # FIXME /gns3/init.sh is not found?
 
         # Give the information to the container on how many interface should be inside
-        params["Env"].append("GNS3_MAX_ETHERNET=eth{}".format(self.adapters - 1))
+        params["Env"].append(f"GNS3_MAX_ETHERNET=eth{self.adapters - 1}")
         # Give the information to the container the list of volume path mounted
         params["Env"].append("GNS3_VOLUMES={}".format(":".join(self._volumes)))
 
@@ -386,14 +502,14 @@ class DockerVM(BaseNode):
             variables = []
 
         for var in variables:
-            formatted = self._format_env(variables, var.get('value', ''))
+            formatted = self._format_env(variables, var.get("value", ""))
             params["Env"].append("{}={}".format(var["name"], formatted))
 
         if self._environment:
             for e in self._environment.strip().split("\n"):
                 e = e.strip()
                 if e.split("=")[0] == "":
-                    self.project.emit("log.warning", {"message": "{} has invalid environment variable: {}".format(self.name, e)})
+                    self.project.emit("log.warning", {"message": f"{self.name} has invalid environment variable: {e}"})
                     continue
                 if not e.startswith("GNS3_"):
                     formatted = self._format_env(variables, e)
@@ -407,23 +523,34 @@ class DockerVM(BaseNode):
 
         if self._console_type == "vnc":
             await self._start_vnc()
-            params["Env"].append("QT_GRAPHICSSYSTEM=native")  # To fix a Qt issue: https://github.com/GNS3/gns3-server/issues/556
-            params["Env"].append("DISPLAY=:{}".format(self._display))
-            params["HostConfig"]["Binds"].append("/tmp/.X11-unix/X{0}:/tmp/.X11-unix/X{0}:ro".format(self._display))
+            params["Env"].append(
+                "QT_GRAPHICSSYSTEM=native"
+            )  # To fix a Qt issue: https://github.com/GNS3/gns3-server/issues/556
+            params["Env"].append(f"DISPLAY=:{self._display}")
+            params["HostConfig"]["Mounts"].append({
+                "Type": "bind",
+                "Source": f"/tmp/.X11-unix/X{self._display}",
+                "Target": f"/tmp/.X11-unix/X{self._display}",
+                "ReadOnly": True
+            })
 
         if self._extra_hosts:
             extra_hosts = self._format_extra_hosts(self._extra_hosts)
             if extra_hosts:
-                params["Env"].append("GNS3_EXTRA_HOSTS={}".format(extra_hosts))
+                params["Env"].append(f"GNS3_EXTRA_HOSTS={extra_hosts}")
 
         result = await self.manager.query("POST", "containers/create", data=params)
-        self._cid = result['Id']
-        log.info("Docker container '{name}' [{id}] created".format(name=self._name, id=self._id))
+        self._cid = result["Id"]
+        log.info(f"Docker container '{self._name}' [{self._id}] created")
+        if self._cpus > 0:
+            log.info(f"CPU limit set to {self._cpus} CPUs")
+        if self._memory > 0:
+            log.info(f"Memory limit set to {self._memory} MB")
         return True
 
     def _format_env(self, variables, env):
         for variable in variables:
-            env = env.replace('${' + variable["name"] + '}', variable.get("value", ""))
+            env = env.replace("${" + variable["name"] + "}", variable.get("value", ""))
         return env
 
     def _format_extra_hosts(self, extra_hosts):
@@ -437,12 +564,12 @@ class DockerVM(BaseNode):
                 if hostname and ip:
                     hosts.append((hostname, ip))
         except ValueError:
-            raise DockerError("Can't apply `ExtraHosts`, wrong format: {}".format(extra_hosts))
-        return "\n".join(["{}\t{}".format(h[1], h[0]) for h in hosts])
+            raise DockerError(f"Can't apply `ExtraHosts`, wrong format: {extra_hosts}")
+        return "\n".join([f"{h[1]}\t{h[0]}" for h in hosts])
 
     async def update(self):
         """
-        Destroy an recreate the container with the new settings
+        Destroy and recreate the container with the new settings
         """
 
         # We need to save the console and state and restore it
@@ -468,8 +595,11 @@ class DockerVM(BaseNode):
         try:
             state = await self._get_container_state()
         except DockerHttp404Error:
-            raise DockerError("Docker container '{name}' with ID {cid} does not exist or is not ready yet. Please try again in a few seconds.".format(name=self.name,
-                                                                                                                                                      cid=self._cid))
+            raise DockerError(
+                "Docker container '{name}' with ID {cid} does not exist or is not ready yet. Please try again in a few seconds.".format(
+                    name=self.name, cid=self._cid
+                )
+            )
         if state == "paused":
             await self.unpause()
         elif state == "running":
@@ -481,9 +611,12 @@ class DockerVM(BaseNode):
                 await self._start_vnc_process(restart=True)
                 monitor_process(self._vnc_process, self._vnc_callback)
 
+            if self._console_websocket:
+                await self._console_websocket.close()
+                self._console_websocket = None
             await self._clean_servers()
 
-            await self.manager.query("POST", "containers/{}/start".format(self._cid))
+            await self.manager.query("POST", f"containers/{self._cid}/start")
             self._namespace = await self._get_namespace()
 
             await self._start_ubridge(require_privileged_access=True)
@@ -499,7 +632,7 @@ class DockerVM(BaseNode):
 
                         # The container can crash soon after the start, this means we can not move the interface to the container namespace
                         logdata = await self._get_log()
-                        for line in logdata.split('\n'):
+                        for line in logdata.split("\n"):
                             log.error(line)
                         raise DockerError(logdata)
 
@@ -508,15 +641,16 @@ class DockerVM(BaseNode):
             elif self.console_type == "http" or self.console_type == "https":
                 await self._start_http()
 
-            if self.allocate_aux:
+            if self.aux_type != "none":
                 await self._start_aux()
 
         self._permissions_fixed = False
         self.status = "started"
-        log.info("Docker container '{name}' [{image}] started listen for {console_type} on {console}".format(name=self._name,
-                                                                                                             image=self._image,
-                                                                                                             console=self.console,
-                                                                                                             console_type=self.console_type))
+        log.info(
+            "Docker container '{name}' [{image}] started listen for {console_type} on {console}".format(
+                name=self._name, image=self._image, console=self.console, console_type=self.console_type
+            )
+        )
 
     async def _start_aux(self):
         """
@@ -533,16 +667,20 @@ class DockerVM(BaseNode):
                 "/dev/null",
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.STDOUT,
-                stdin=asyncio.subprocess.PIPE
+                stdin=asyncio.subprocess.PIPE,
             )
         except OSError as e:
-            raise DockerError("Could not start auxiliary console process: {}".format(e))
+            raise DockerError(f"Could not start auxiliary console process: {e}")
         server = AsyncioTelnetServer(reader=process.stdout, writer=process.stdin, binary=True, echo=True)
         try:
-            self._telnet_servers.append((await asyncio.start_server(server.run, self._manager.port_manager.console_host, self.aux)))
+            self._telnet_servers.append(
+                await asyncio.start_server(server.run, self._manager.port_manager.console_host, self.aux)
+            )
         except OSError as e:
-            raise DockerError("Could not start Telnet server on socket {}:{}: {}".format(self._manager.port_manager.console_host, self.aux, e))
-        log.debug("Docker container '%s' started listen for auxiliary telnet on %d", self.name, self.aux)
+            raise DockerError(
+                f"Could not start Telnet server on socket {self._manager.port_manager.console_host}:{self.aux}: {e}"
+            )
+        log.debug(f"Docker container '{self.name}' started listen for auxiliary telnet on {self.aux}")
 
     async def _fix_permissions(self):
         """
@@ -551,14 +689,17 @@ class DockerVM(BaseNode):
         """
 
         state = await self._get_container_state()
-        log.info("Docker container '{name}' fix ownership, state = {state}".format(name=self._name, state=state))
+        log.info(f"Docker container '{self._name}' fix ownership, state = {state}")
         if state == "stopped" or state == "exited":
             # We need to restart it to fix permissions
-            await self.manager.query("POST", "containers/{}/start".format(self._cid))
+            await self.manager.query("POST", f"containers/{self._cid}/start")
 
         for volume in self._volumes:
-            log.debug("Docker container '{name}' [{image}] fix ownership on {path}".format(
-                name=self._name, image=self._image, path=volume))
+            log.debug(
+                "Docker container '{name}' [{image}] fix ownership on {path}".format(
+                    name=self._name, image=self._image, path=volume
+                )
+            )
 
             try:
                 process = await asyncio.subprocess.create_subprocess_exec(
@@ -569,15 +710,16 @@ class DockerVM(BaseNode):
                     "sh",
                     "-c",
                     "("
-                    "/gns3/bin/busybox find \"{path}\" -depth -print0"
+                    '/gns3/bin/busybox find "{path}" -depth -print0'
                     " | /gns3/bin/busybox xargs -0 /gns3/bin/busybox stat -c '%a:%u:%g:%n' > \"{path}/.gns3_perms\""
                     ")"
-                    " && /gns3/bin/busybox chmod -R u+rX \"{path}\""
-                    " && /gns3/bin/busybox chown {uid}:{gid} -R \"{path}\""
-                    .format(uid=os.getuid(), gid=os.getgid(), path=volume),
+                    ' && /gns3/bin/busybox chmod -R u+rX "{path}"'
+                    ' && /gns3/bin/busybox chown {uid}:{gid} -R "{path}"'.format(
+                        uid=os.getuid(), gid=os.getgid(), path=volume
+                    ),
                 )
             except OSError as e:
-                raise DockerError("Could not fix permissions for {}: {}".format(volume, e))
+                raise DockerError(f"Could not fix permissions for {volume}: {e}")
             await process.wait()
             self._permissions_fixed = True
 
@@ -615,17 +757,19 @@ class DockerVM(BaseNode):
         if not tigervnc_path:
             raise DockerError("Please install TigerVNC server before using VNC support")
         await self._start_vnc_process()
-        x11_socket = os.path.join("/tmp/.X11-unix/", "X{}".format(self._display))
+        x11_socket = os.path.join("/tmp/.X11-unix/", f"X{self._display}")
         try:
             await wait_for_file_creation(x11_socket)
         except asyncio.TimeoutError:
-            raise DockerError('x11 socket file "{}" does not exist'.format(x11_socket))
+            raise DockerError(f'x11 socket file "{x11_socket}" does not exist')
 
         if not hasattr(sys, "_called_from_test") or not sys._called_from_test:
             # Start vncconfig for tigervnc clipboard support, connection available only after socket creation.
             tigervncconfig_path = shutil.which("vncconfig")
             if tigervnc_path and tigervncconfig_path:
-                self._vncconfig_process = await asyncio.create_subprocess_exec(tigervncconfig_path, "-display", ":{}".format(self._display), "-nowin")
+                self._vncconfig_process = await asyncio.create_subprocess_exec(
+                    tigervncconfig_path, "-display", f":{self._display}", "-nowin"
+                )
 
         # sometimes the VNC process can crash
         monitor_process(self._vnc_process, self._vnc_callback)
@@ -638,7 +782,12 @@ class DockerVM(BaseNode):
         """
 
         if returncode != 0 and self._closing is False:
-            self.project.emit("log.error", {"message": "The vnc process has stopped with return code {} for node '{}'. Please restart this node.".format(returncode, self.name)})
+            self.project.emit(
+                "log.error",
+                {
+                    "message": f"The vnc process has stopped with return code {returncode} for node '{self.name}'. Please restart this node."
+                },
+            )
             self._vnc_process = None
 
     async def _start_http(self):
@@ -648,19 +797,33 @@ class DockerVM(BaseNode):
         """
 
         log.debug("Forward HTTP for %s to %d", self.name, self._console_http_port)
-        command = ["docker", "exec", "-i", self._cid, "/gns3/bin/busybox", "nc", "127.0.0.1", str(self._console_http_port)]
+        command = [
+            "docker",
+            "exec",
+            "-i",
+            self._cid,
+            "/gns3/bin/busybox",
+            "nc",
+            "127.0.0.1",
+            str(self._console_http_port),
+        ]
         # We replace host and port in the server answer otherwise some link could be broken
-        server = AsyncioRawCommandServer(command, replaces=[
-            (
-                '://127.0.0.1'.encode(),  # {{HOST}} mean client host
-                '://{{HOST}}'.encode(),
-            ),
-            (
-                ':{}'.format(self._console_http_port).encode(),
-                ':{}'.format(self.console).encode(),
-            )
-        ])
-        self._telnet_servers.append((await asyncio.start_server(server.run, self._manager.port_manager.console_host, self.console)))
+        server = AsyncioRawCommandServer(
+            command,
+            replaces=[
+                (
+                    b"://127.0.0.1",  # {{HOST}} mean client host
+                    b"://{{HOST}}",
+                ),
+                (
+                    f":{self._console_http_port}".encode(),
+                    f":{self.console}".encode(),
+                ),
+            ],
+        )
+        self._telnet_servers.append(
+            await asyncio.start_server(server.run, self._manager.port_manager.console_host, self.console)
+        )
 
     async def _window_size_changed_callback(self, columns, rows):
         """
@@ -672,7 +835,10 @@ class DockerVM(BaseNode):
         """
 
         # resize the container TTY.
-        await self._manager.query("POST", "containers/{}/resize?h={}&w={}".format(self._cid, rows, columns))
+        try:
+            await self._manager.query("POST", f"containers/{self._cid}/resize?h={rows}&w={columns}")
+        except DockerError as e:
+            log.warning(f"Could not resize the container TTY: {e}")
 
     async def _start_console(self):
         """
@@ -680,7 +846,6 @@ class DockerVM(BaseNode):
         """
 
         class InputStream:
-
             def __init__(self):
                 self._data = b""
 
@@ -694,17 +859,27 @@ class DockerVM(BaseNode):
 
         output_stream = asyncio.StreamReader()
         input_stream = InputStream()
-        telnet = AsyncioTelnetServer(reader=output_stream, writer=input_stream, echo=True, naws=True, window_size_changed_callback=self._window_size_changed_callback)
+        telnet = AsyncioTelnetServer(
+            reader=output_stream,
+            writer=input_stream,
+            echo=True,
+            naws=True,
+            window_size_changed_callback=self._window_size_changed_callback,
+        )
         try:
-            self._telnet_servers.append((await asyncio.start_server(telnet.run, self._manager.port_manager.console_host, self.console)))
+            self._telnet_servers.append(
+                await asyncio.start_server(telnet.run, self._manager.port_manager.console_host, self.console)
+            )
         except OSError as e:
-            raise DockerError("Could not start Telnet server on socket {}:{}: {}".format(self._manager.port_manager.console_host, self.console, e))
+            raise DockerError(
+                f"Could not start Telnet server on socket {self._manager.port_manager.console_host}:{self.console}: {e}"
+            )
 
-        self._console_websocket = await self.manager.websocket_query("containers/{}/attach/ws?stream=1&stdin=1&stdout=1&stderr=1".format(self._cid))
+        self._console_websocket = await self.manager.websocket_query(
+            f"containers/{self._cid}/attach/ws?stream=1&stdin=1&stdout=1&stderr=1"
+        )
         input_stream.ws = self._console_websocket
-
         output_stream.feed_data(self.name.encode() + b" console is now available... Press RETURN to get started.\r\n")
-
         asyncio.ensure_future(self._read_console_output(self._console_websocket, output_stream))
 
     async def _read_console_output(self, ws, out):
@@ -722,18 +897,19 @@ class DockerVM(BaseNode):
             elif msg.type == aiohttp.WSMsgType.BINARY:
                 out.feed_data(msg.data)
             elif msg.type == aiohttp.WSMsgType.ERROR:
-                log.critical("Docker WebSocket Error: {}".format(ws.exception()))
+                log.critical(f"Docker WebSocket Error: {ws.exception()}")
             else:
                 out.feed_eof()
                 await ws.close()
                 break
-        await self.stop()
 
     async def reset_console(self):
         """
         Reset the console.
         """
 
+        if self._console_websocket:
+            await self._console_websocket.close()
         await self._clean_servers()
         await self._start_console()
 
@@ -757,9 +933,8 @@ class DockerVM(BaseNode):
         Restart this Docker container.
         """
 
-        await self.manager.query("POST", "containers/{}/restart".format(self._cid))
-        log.info("Docker container '{name}' [{image}] restarted".format(
-            name=self._name, image=self._image))
+        await self.manager.query("POST", f"containers/{self._cid}/restart")
+        log.info("Docker container '{name}' [{image}] restarted".format(name=self._name, image=self._image))
 
     async def _clean_servers(self):
         """
@@ -778,6 +953,9 @@ class DockerVM(BaseNode):
         """
 
         try:
+            if self._console_websocket:
+                await self._console_websocket.close()
+                self._console_websocket = None
             await self._clean_servers()
             await self._stop_ubridge()
 
@@ -797,14 +975,14 @@ class DockerVM(BaseNode):
             if state != "stopped" or state != "exited":
                 # t=5 number of seconds to wait before killing the container
                 try:
-                    await self.manager.query("POST", "containers/{}/stop".format(self._cid), params={"t": 5})
-                    log.info("Docker container '{name}' [{image}] stopped".format(name=self._name, image=self._image))
+                    await self.manager.query("POST", f"containers/{self._cid}/stop", params={"t": 5})
+                    log.info(f"Docker container '{self._name}' [{self._image}] stopped")
                 except DockerHttp304Error:
                     # Container is already stopped
                     pass
         # Ignore runtime error because when closing the server
         except RuntimeError as e:
-            log.debug("Docker runtime error when closing: {}".format(str(e)))
+            log.debug(f"Docker runtime error when closing: {str(e)}")
             return
         self.status = "stopped"
 
@@ -813,18 +991,18 @@ class DockerVM(BaseNode):
         Pauses this Docker container.
         """
 
-        await self.manager.query("POST", "containers/{}/pause".format(self._cid))
+        await self.manager.query("POST", f"containers/{self._cid}/pause")
         self.status = "suspended"
-        log.info("Docker container '{name}' [{image}] paused".format(name=self._name, image=self._image))
+        log.info(f"Docker container '{self._name}' [{self._image}] paused")
 
     async def unpause(self):
         """
         Unpauses this Docker container.
         """
 
-        await self.manager.query("POST", "containers/{}/unpause".format(self._cid))
+        await self.manager.query("POST", f"containers/{self._cid}/unpause")
         self.status = "started"
-        log.info("Docker container '{name}' [{image}] unpaused".format(name=self._name, image=self._image))
+        log.info(f"Docker container '{self._name}' [{self._image}] unpaused")
 
     async def close(self):
         """
@@ -858,21 +1036,20 @@ class DockerVM(BaseNode):
                         pass
 
                 if self._display:
-                    display = "/tmp/.X11-unix/X{}".format(self._display)
+                    display = f"/tmp/.X11-unix/X{self._display}"
                     try:
                         if os.path.exists(display):
                             os.remove(display)
                     except OSError as e:
-                        log.warning("Could not remove display {}: {}".format(display, e))
+                        log.warning(f"Could not remove display {display}: {e}")
 
             # v – 1/True/true or 0/False/false, Remove the volumes associated to the container. Default false.
             # force - 1/True/true or 0/False/false, Kill then remove the container. Default false.
             try:
-                await self.manager.query("DELETE", "containers/{}".format(self._cid), params={"force": 1, "v": 1})
+                await self.manager.query("DELETE", f"containers/{self._cid}", params={"force": 1, "v": 1})
             except DockerError:
                 pass
-            log.info("Docker container '{name}' [{image}] removed".format(
-                name=self._name, image=self._image))
+            log.info("Docker container '{name}' [{image}] removed".format(name=self._name, image=self._image))
 
             if release_nio_udp_ports:
                 for adapter in self._ethernet_adapters:
@@ -882,7 +1059,7 @@ class DockerVM(BaseNode):
                                 self.manager.port_manager.release_udp_port(nio.lport, self._project)
         # Ignore runtime error because when closing the server
         except (DockerHttp404Error, RuntimeError) as e:
-            log.debug("Docker error when closing: {}".format(str(e)))
+            log.debug(f"Docker error when closing: {str(e)}")
             return
 
     async def _add_ubridge_connection(self, nio, adapter_number):
@@ -896,49 +1073,79 @@ class DockerVM(BaseNode):
         try:
             adapter = self._ethernet_adapters[adapter_number]
         except IndexError:
-            raise DockerError("Adapter {adapter_number} doesn't exist on Docker container '{name}'".format(name=self.name,
-                                                                                                           adapter_number=adapter_number))
+            raise DockerError(
+                "Adapter {adapter_number} doesn't exist on Docker container '{name}'".format(
+                    name=self.name, adapter_number=adapter_number
+                )
+            )
 
         for index in range(4096):
-            if "tap-gns3-e{}".format(index) not in psutil.net_if_addrs():
-                adapter.host_ifc = "tap-gns3-e{}".format(str(index))
+            if f"tap-gns3-e{index}" not in psutil.net_if_addrs():
+                adapter.host_ifc = f"tap-gns3-e{str(index)}"
                 break
         if adapter.host_ifc is None:
-            raise DockerError("Adapter {adapter_number} couldn't allocate interface on Docker container '{name}'. Too many Docker interfaces already exists".format(name=self.name,
-                                                                                                                                                                    adapter_number=adapter_number))
-        bridge_name = 'bridge{}'.format(adapter_number)
-        await self._ubridge_send('bridge create {}'.format(bridge_name))
+            raise DockerError(
+                "Adapter {adapter_number} couldn't allocate interface on Docker container '{name}'. Too many Docker interfaces already exists".format(
+                    name=self.name, adapter_number=adapter_number
+                )
+            )
+        bridge_name = f"bridge{adapter_number}"
+        await self._ubridge_send(f"bridge create {bridge_name}")
         self._bridges.add(bridge_name)
-        await self._ubridge_send('bridge add_nio_tap bridge{adapter_number} {hostif}'.format(adapter_number=adapter_number,
-                                                                                                  hostif=adapter.host_ifc))
-        log.debug("Move container %s adapter %s to namespace %s", self.name, adapter.host_ifc, self._namespace)
+        await self._ubridge_send(
+            "bridge add_nio_tap bridge{adapter_number} {hostif}".format(
+                adapter_number=adapter_number, hostif=adapter.host_ifc
+            )
+        )
+
+        mac_address = int_to_macaddress(macaddress_to_int(self._mac_address) + adapter_number)
+        custom_adapter = self._get_custom_adapter_settings(adapter_number)
+        custom_mac_address = custom_adapter.get("mac_address")
+        if custom_mac_address:
+            mac_address = custom_mac_address
+
         try:
-            await self._ubridge_send('docker move_to_ns {ifc} {ns} eth{adapter}'.format(ifc=adapter.host_ifc,
-                                                                                             ns=self._namespace,
-                                                                                             adapter=adapter_number))
+            await self._ubridge_send('docker set_mac_addr {ifc} {mac}'.format(ifc=adapter.host_ifc, mac=mac_address))
+        except UbridgeError:
+            log.warning(f"Could not set MAC address {mac_address} on interface {adapter.host_ifc}")
+
+
+        log.debug(f"Move container {self.name} adapter {adapter.host_ifc} to namespace {self._namespace}")
+        try:
+            await self._ubridge_send(
+                "docker move_to_ns {ifc} {ns} eth{adapter}".format(
+                    ifc=adapter.host_ifc, ns=self._namespace, adapter=adapter_number
+                )
+            )
         except UbridgeError as e:
             raise UbridgeNamespaceError(e)
+        else:
+            log.info(f"Created adapter {adapter_number} with MAC address {mac_address} in namespace {self._namespace}")
 
         if nio:
             await self._connect_nio(adapter_number, nio)
 
     async def _get_namespace(self):
 
-        result = await self.manager.query("GET", "containers/{}/json".format(self._cid))
-        return int(result['State']['Pid'])
+        result = await self.manager.query("GET", f"containers/{self._cid}/json")
+        return int(result["State"]["Pid"])
 
     async def _connect_nio(self, adapter_number, nio):
 
-        bridge_name = 'bridge{}'.format(adapter_number)
-        await self._ubridge_send('bridge add_nio_udp {bridge_name} {lport} {rhost} {rport}'.format(bridge_name=bridge_name,
-                                                                                                        lport=nio.lport,
-                                                                                                        rhost=nio.rhost,
-                                                                                                        rport=nio.rport))
+        bridge_name = f"bridge{adapter_number}"
+        await self._ubridge_send(
+            "bridge add_nio_udp {bridge_name} {lport} {rhost} {rport}".format(
+                bridge_name=bridge_name, lport=nio.lport, rhost=nio.rhost, rport=nio.rport
+            )
+        )
 
         if nio.capturing:
-            await self._ubridge_send('bridge start_capture {bridge_name} "{pcap_file}"'.format(bridge_name=bridge_name,
-                                                                                                    pcap_file=nio.pcap_output_file))
-        await self._ubridge_send('bridge start {bridge_name}'.format(bridge_name=bridge_name))
+            await self._ubridge_send(
+                'bridge start_capture {bridge_name} "{pcap_file}"'.format(
+                    bridge_name=bridge_name, pcap_file=nio.pcap_output_file
+                )
+            )
+        await self._ubridge_send(f"bridge start {bridge_name}")
         await self._ubridge_apply_filters(bridge_name, nio.filters)
 
     async def adapter_add_nio_binding(self, adapter_number, nio):
@@ -952,17 +1159,21 @@ class DockerVM(BaseNode):
         try:
             adapter = self._ethernet_adapters[adapter_number]
         except IndexError:
-            raise DockerError("Adapter {adapter_number} doesn't exist on Docker container '{name}'".format(name=self.name,
-                                                                                                           adapter_number=adapter_number))
+            raise DockerError(
+                "Adapter {adapter_number} doesn't exist on Docker container '{name}'".format(
+                    name=self.name, adapter_number=adapter_number
+                )
+            )
 
         if self.status == "started" and self.ubridge:
             await self._connect_nio(adapter_number, nio)
 
         adapter.add_nio(0, nio)
-        log.info("Docker container '{name}' [{id}]: {nio} added to adapter {adapter_number}".format(name=self.name,
-                                                                                                    id=self._id,
-                                                                                                    nio=nio,
-                                                                                                    adapter_number=adapter_number))
+        log.info(
+            "Docker container '{name}' [{id}]: {nio} added to adapter {adapter_number}".format(
+                name=self.name, id=self._id, nio=nio, adapter_number=adapter_number
+            )
+        )
 
     async def adapter_update_nio_binding(self, adapter_number, nio):
         """
@@ -973,7 +1184,7 @@ class DockerVM(BaseNode):
         """
 
         if self.ubridge:
-            bridge_name = 'bridge{}'.format(adapter_number)
+            bridge_name = f"bridge{adapter_number}"
             if bridge_name in self._bridges:
                 await self._ubridge_apply_filters(bridge_name, nio.filters)
 
@@ -989,25 +1200,30 @@ class DockerVM(BaseNode):
         try:
             adapter = self._ethernet_adapters[adapter_number]
         except IndexError:
-            raise DockerError("Adapter {adapter_number} doesn't exist on Docker VM '{name}'".format(name=self.name,
-                                                                                                    adapter_number=adapter_number))
+            raise DockerError(
+                "Adapter {adapter_number} doesn't exist on Docker VM '{name}'".format(
+                    name=self.name, adapter_number=adapter_number
+                )
+            )
 
         await self.stop_capture(adapter_number)
         if self.ubridge:
             nio = adapter.get_nio(0)
-            bridge_name = 'bridge{}'.format(adapter_number)
-            await self._ubridge_send("bridge stop {}".format(bridge_name))
-            await self._ubridge_send('bridge remove_nio_udp bridge{adapter} {lport} {rhost} {rport}'.format(adapter=adapter_number,
-                                                                                                                 lport=nio.lport,
-                                                                                                                 rhost=nio.rhost,
-                                                                                                                 rport=nio.rport))
+            bridge_name = f"bridge{adapter_number}"
+            await self._ubridge_send(f"bridge stop {bridge_name}")
+            await self._ubridge_send(
+                "bridge remove_nio_udp bridge{adapter} {lport} {rhost} {rport}".format(
+                    adapter=adapter_number, lport=nio.lport, rhost=nio.rhost, rport=nio.rport
+                )
+            )
 
         adapter.remove_nio(0)
 
-        log.info("Docker VM '{name}' [{id}]: {nio} removed from adapter {adapter_number}".format(name=self.name,
-                                                                                                 id=self.id,
-                                                                                                 nio=adapter.host_ifc,
-                                                                                                 adapter_number=adapter_number))
+        log.info(
+            "Docker VM '{name}' [{id}]: {nio} removed from adapter {adapter_number}".format(
+                name=self.name, id=self.id, nio=adapter.host_ifc, adapter_number=adapter_number
+            )
+        )
 
     def get_nio(self, adapter_number):
         """
@@ -1021,13 +1237,16 @@ class DockerVM(BaseNode):
         try:
             adapter = self._ethernet_adapters[adapter_number]
         except KeyError:
-            raise DockerError("Adapter {adapter_number} doesn't exist on Docker VM '{name}'".format(name=self.name,
-                                                                                                    adapter_number=adapter_number))
+            raise DockerError(
+                "Adapter {adapter_number} doesn't exist on Docker VM '{name}'".format(
+                    name=self.name, adapter_number=adapter_number
+                )
+            )
 
         nio = adapter.get_nio(0)
 
         if not nio:
-            raise DockerError("Adapter {} is not connected".format(adapter_number))
+            raise DockerError(f"Adapter {adapter_number} is not connected")
 
         return nio
 
@@ -1057,9 +1276,11 @@ class DockerVM(BaseNode):
         for adapter_number in range(0, adapters):
             self._ethernet_adapters.append(EthernetAdapter())
 
-        log.info('Docker container "{name}" [{id}]: number of Ethernet adapters changed to {adapters}'.format(name=self._name,
-                                                                                                              id=self._id,
-                                                                                                              adapters=adapters))
+        log.info(
+            'Docker container "{name}" [{id}]: number of Ethernet adapters changed to {adapters}'.format(
+                name=self._name, id=self._id, adapters=adapters
+            )
+        )
 
     async def pull_image(self, image):
         """
@@ -1068,6 +1289,7 @@ class DockerVM(BaseNode):
 
         def callback(msg):
             self.project.emit("log.info", {"message": msg})
+
         await self.manager.pull_image(image, progress_callback=callback)
 
     async def _start_ubridge_capture(self, adapter_number, output_file):
@@ -1078,10 +1300,10 @@ class DockerVM(BaseNode):
         :param output_file: PCAP destination file for the capture
         """
 
-        adapter = "bridge{}".format(adapter_number)
+        adapter = f"bridge{adapter_number}"
         if not self.ubridge:
             raise DockerError("Cannot start the packet capture: uBridge is not running")
-        await self._ubridge_send('bridge start_capture {name} "{output_file}"'.format(name=adapter, output_file=output_file))
+        await self._ubridge_send(f'bridge start_capture {adapter} "{output_file}"')
 
     async def _stop_ubridge_capture(self, adapter_number):
         """
@@ -1090,10 +1312,10 @@ class DockerVM(BaseNode):
         :param adapter_number: adapter number
         """
 
-        adapter = "bridge{}".format(adapter_number)
+        adapter = f"bridge{adapter_number}"
         if not self.ubridge:
             raise DockerError("Cannot stop the packet capture: uBridge is not running")
-        await self._ubridge_send("bridge stop_capture {name}".format(name=adapter))
+        await self._ubridge_send(f"bridge stop_capture {adapter}")
 
     async def start_capture(self, adapter_number, output_file):
         """
@@ -1105,15 +1327,17 @@ class DockerVM(BaseNode):
 
         nio = self.get_nio(adapter_number)
         if nio.capturing:
-            raise DockerError("Packet capture is already activated on adapter {adapter_number}".format(adapter_number=adapter_number))
+            raise DockerError(f"Packet capture is already activated on adapter {adapter_number}")
 
         nio.start_packet_capture(output_file)
         if self.status == "started" and self.ubridge:
             await self._start_ubridge_capture(adapter_number, output_file)
 
-        log.info("Docker VM '{name}' [{id}]: starting packet capture on adapter {adapter_number}".format(name=self.name,
-                                                                                                         id=self.id,
-                                                                                                         adapter_number=adapter_number))
+        log.info(
+            "Docker VM '{name}' [{id}]: starting packet capture on adapter {adapter_number}".format(
+                name=self.name, id=self.id, adapter_number=adapter_number
+            )
+        )
 
     async def stop_capture(self, adapter_number):
         """
@@ -1129,9 +1353,11 @@ class DockerVM(BaseNode):
         if self.status == "started" and self.ubridge:
             await self._stop_ubridge_capture(adapter_number)
 
-        log.info("Docker VM '{name}' [{id}]: stopping packet capture on adapter {adapter_number}".format(name=self.name,
-                                                                                                         id=self.id,
-                                                                                                         adapter_number=adapter_number))
+        log.info(
+            "Docker VM '{name}' [{id}]: stopping packet capture on adapter {adapter_number}".format(
+                name=self.name, id=self.id, adapter_number=adapter_number
+            )
+        )
 
     async def _get_log(self):
         """
@@ -1140,7 +1366,7 @@ class DockerVM(BaseNode):
         :returns: string
         """
 
-        result = await self.manager.query("GET", "containers/{}/logs".format(self._cid), params={"stderr": 1, "stdout": 1})
+        result = await self.manager.query("GET", f"containers/{self._cid}/logs", params={"stderr": 1, "stdout": 1})
         return result
 
     async def delete(self):

@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 #
 # Copyright (C) 2015 GNS3 Technologies Inc.
 #
@@ -29,6 +28,7 @@ import shutil
 import platformdirs
 
 from gns3server.utils import parse_version
+from gns3server.config import Config
 from gns3server.utils.asyncio import locking
 from gns3server.compute.base_manager import BaseManager
 from gns3server.compute.docker.docker_vm import DockerVM
@@ -51,7 +51,7 @@ class Docker(BaseManager):
     def __init__(self):
 
         super().__init__()
-        self._server_url = '/var/run/docker.sock'
+        self._server_url = "/var/run/docker.sock"
         self._connected = False
         # Allow locking during ubridge operations
         self.ubridge_lock = asyncio.Lock()
@@ -88,7 +88,7 @@ class Docker(BaseManager):
                                     f"{stdout.decode('utf-8', errors='ignore').strip()}")
                 except OSError as e:
                     raise DockerError(f"Could not install busybox: {e}")
-        raise DockerError("No busybox executable could be found")
+        raise DockerError("No busybox executable could be found, please install busybox (apt install busybox-static on Debian/Ubuntu) and make sure it is in your PATH")
 
     @staticmethod
     def resources_path():
@@ -96,8 +96,13 @@ class Docker(BaseManager):
         Get the Docker resources storage directory
         """
 
-        appname = vendor = "GNS3"
-        docker_resources_dir = os.path.join(platformdirs.user_data_dir(appname, vendor, roaming=True), "docker", "resources")
+        resources_path = Config.instance().settings.Server.resources_path
+        if not resources_path:
+            appname = vendor = "GNS3"
+            resources_path = platformdirs.user_data_dir(appname, vendor, roaming=True)
+        else:
+            resources_path = os.path.expanduser(resources_path)
+        docker_resources_dir = os.path.join(resources_path, "docker")
         os.makedirs(docker_resources_dir, exist_ok=True)
         return docker_resources_dir
 
@@ -110,7 +115,7 @@ class Docker(BaseManager):
             dst_path = self.resources_path()
             log.info(f"Installing Docker resources in '{dst_path}'")
             from gns3server.controller import Controller
-            Controller.instance().install_resource_files(dst_path, "compute/docker/resources")
+            await Controller.instance().install_resource_files(dst_path, "compute/docker/resources")
             await self.install_busybox(dst_path)
         except OSError as e:
             raise DockerError(f"Could not install Docker resources to {dst_path}: {e}")
@@ -120,18 +125,18 @@ class Docker(BaseManager):
         if not self._connected:
             try:
                 self._connected = True
-                connector = self.connector()
                 version = await self.query("GET", "version")
-            except (aiohttp.ClientOSError, FileNotFoundError):
+            except (aiohttp.ClientError, FileNotFoundError):
                 self._connected = False
                 raise DockerError("Can't connect to docker daemon")
 
-            docker_version = parse_version(version['ApiVersion'])
+            docker_version = parse_version(version["ApiVersion"])
 
             if docker_version < parse_version(DOCKER_MINIMUM_API_VERSION):
                 raise DockerError(
-                    "Docker version is {}. GNS3 requires a minimum version of {}".format(
-                        version["Version"], DOCKER_MINIMUM_VERSION))
+                    f"Docker version is {version['Version']}. "
+                    f"GNS3 requires a minimum version of {DOCKER_MINIMUM_VERSION}"
+                )
 
             preferred_api_version = parse_version(DOCKER_PREFERRED_API_VERSION)
             if docker_version >= preferred_api_version:
@@ -144,7 +149,7 @@ class Docker(BaseManager):
                 raise DockerError("Docker is supported only on Linux")
             try:
                 self._connector = aiohttp.connector.UnixConnector(self._server_url, limit=None)
-            except (aiohttp.ClientOSError, FileNotFoundError):
+            except (aiohttp.ClientError, FileNotFoundError):
                 raise DockerError("Can't connect to docker daemon")
         return self._connector
 
@@ -204,14 +209,18 @@ class Docker(BaseManager):
             if self._session is None or self._session.closed:
                 connector = self.connector()
                 self._session = aiohttp.ClientSession(connector=connector)
-            response = await self._session.request(method,
-                                                   url,
-                                                   params=params,
-                                                   data=data,
-                                                   headers={"content-type": "application/json", },
-                                                   timeout=timeout)
+            response = await self._session.request(
+                method,
+                url,
+                params=params,
+                data=data,
+                headers={
+                    "content-type": "application/json",
+                },
+                timeout=timeout,
+            )
         except aiohttp.ClientError as e:
-            raise DockerError("Docker has returned an error: {}".format(str(e)))
+            raise DockerError(f"Docker has returned an error: {e}")
         except asyncio.TimeoutError:
             raise DockerError("Docker timeout " + method + " " + path)
         if response.status >= 300:
@@ -220,13 +229,13 @@ class Docker(BaseManager):
                 body = json.loads(body.decode("utf-8"))["message"]
             except ValueError:
                 pass
-            log.debug("Query Docker %s %s params=%s data=%s Response: %s", method, path, params, data, body)
+            log.debug(f"Query Docker {method} {path} params={params} data={data} Response: {body}")
             if response.status == 304:
-                raise DockerHttp304Error("Docker has returned an error: {} {}".format(response.status, body))
+                raise DockerHttp304Error(f"Docker has returned an error: {response.status} {body}")
             elif response.status == 404:
-                raise DockerHttp404Error("Docker has returned an error: {} {}".format(response.status, body))
+                raise DockerHttp404Error(f"Docker has returned an error: {response.status} {body}")
             else:
-                raise DockerError("Docker has returned an error: {} {}".format(response.status, body))
+                raise DockerError(f"Docker has returned an error: {response.status} {body}")
         return response
 
     async def websocket_query(self, path, params={}):
@@ -252,27 +261,30 @@ class Docker(BaseManager):
         """
 
         try:
-            await self.query("GET", "images/{}/json".format(image))
+            await self.query("GET", f"images/{image}/json")
             return  # We already have the image skip the download
         except DockerHttp404Error:
             pass
 
         if progress_callback:
-            progress_callback("Pulling '{}' from docker hub".format(image))
+            progress_callback(f"Pulling '{image}' from docker hub")
         try:
             response = await self.http_query("POST", "images/create", params={"fromImage": image}, timeout=None)
         except DockerError as e:
-            raise DockerError("Could not pull the '{}' image from Docker Hub, please check your Internet connection (original error: {})".format(image, e))
+            raise DockerError(
+                f"Could not pull the '{image}' image from Docker Hub, "
+                f"please check your Internet connection (original error: {e})"
+            )
         # The pull api will stream status via an HTTP JSON stream
         content = ""
         while True:
             try:
                 chunk = await response.content.read(CHUNK_SIZE)
             except aiohttp.ServerDisconnectedError:
-                log.error("Disconnected from server while pulling Docker image '{}' from docker hub".format(image))
+                log.error(f"Disconnected from server while pulling Docker image '{image}' from docker hub")
                 break
             except asyncio.TimeoutError:
-                log.error("Timeout while pulling Docker image '{}' from docker hub".format(image))
+                log.error(f"Timeout while pulling Docker image '{image}' from docker hub")
                 break
             if not chunk:
                 break
@@ -289,7 +301,7 @@ class Docker(BaseManager):
                 pass
         response.close()
         if progress_callback:
-            progress_callback("Success pulling image {}".format(image))
+            progress_callback(f"Success pulling image {image}")
 
     async def list_images(self):
         """
@@ -300,9 +312,9 @@ class Docker(BaseManager):
         """
 
         images = []
-        for image in (await self.query("GET", "images/json", params={"all": 0})):
-            if image['RepoTags']:
-                for tag in image['RepoTags']:
+        for image in await self.query("GET", "images/json", params={"all": 0}):
+            if image["RepoTags"]:
+                for tag in image["RepoTags"]:
                     if tag != "<none>:<none>":
-                        images.append({'image': tag})
-        return sorted(images, key=lambda i: i['image'])
+                        images.append({"image": tag})
+        return sorted(images, key=lambda i: i["image"])

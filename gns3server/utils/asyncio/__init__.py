@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 #
 # Copyright (C) 2015 GNS3 Technologies Inc.
 #
@@ -51,7 +50,7 @@ async def cancellable_wait_run_in_executor(func, *args, **kwargs):
     :returns: Return the result of the function
     """
     stopped_event = threading.Event()
-    kwargs['stopped_event'] = stopped_event
+    kwargs["stopped_event"] = stopped_event
     try:
         await wait_run_in_executor(func, *args, **kwargs)
     except asyncio.CancelledError:
@@ -78,7 +77,7 @@ async def subprocess_check_output(*args, cwd=None, env=None, stderr=False):
     if output is None:
         return ""
     # If we received garbage we ignore invalid characters
-    # it should happens only when user try to use another binary
+    # it should happen only when user try to use another binary
     # and the code of VPCS, dynamips... Will detect it's not the correct binary
     return output.decode("utf-8", errors="ignore")
 
@@ -98,18 +97,10 @@ async def wait_for_process_termination(process, timeout=10):
     :param timeout: Timeout in seconds
     """
 
-    if sys.version_info >= (3, 5):
-        try:
-            await asyncio.wait_for(process.wait(), timeout=timeout)
-        except ProcessLookupError:
-            return
-    else:
-        while timeout > 0:
-            if process.returncode is not None:
-                return
-            await asyncio.sleep(0.1)
-            timeout -= 0.1
-        raise asyncio.TimeoutError()
+    try:
+        await asyncio.wait_for(process.wait(), timeout=timeout)
+    except ProcessLookupError:
+        return
 
 
 async def _check_process(process, termination_callback):
@@ -137,24 +128,7 @@ async def wait_for_file_creation(path, timeout=60):
     raise asyncio.TimeoutError()
 
 
-async def wait_for_named_pipe_creation(pipe_path, timeout=60):
-
-    import win32pipe
-    import pywintypes
-
-    while timeout > 0:
-        try:
-            win32pipe.WaitNamedPipe(pipe_path, 1)
-        except pywintypes.error:
-            await asyncio.sleep(0.5)
-            timeout -= 0.5
-        else:
-            return
-    raise asyncio.TimeoutError()
-
-
 def locking(f):
-
     @functools.wraps(f)
     async def wrapper(oself, *args, **kwargs):
         lock_name = "__" + f.__name__ + "_lock"
@@ -162,4 +136,5 @@ def locking(f):
             setattr(oself, lock_name, asyncio.Lock())
         async with getattr(oself, lock_name):
             return await f(oself, *args, **kwargs)
+
     return wrapper

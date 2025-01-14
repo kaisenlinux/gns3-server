@@ -16,9 +16,9 @@
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 import os
-import aiohttp
-from pathlib import Path
 
+from pathlib import Path
+from fastapi import HTTPException, status
 from ..config import Config
 
 
@@ -28,13 +28,13 @@ def get_default_project_directory():
     depending of the operating system
     """
 
-    server_config = Config.instance().get_section_config("Server")
-    path = os.path.expanduser(server_config.get("projects_path", "~/GNS3/projects"))
+    server_config = Config.instance().settings.Server
+    path = os.path.expanduser(server_config.projects_path)
     path = os.path.normpath(path)
     try:
         os.makedirs(path, exist_ok=True)
     except OSError as e:
-        raise aiohttp.web.HTTPInternalServerError(text="Could not create project directory: {}".format(e))
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=f"Could not create project directory: {e}")
     return path
 
 
@@ -56,14 +56,11 @@ def check_path_allowed(path: str):
     Raise a 403 in case of error
     """
 
-    config = Config.instance().get_section_config("Server")
-
     project_directory = get_default_project_directory()
     if len(os.path.commonprefix([project_directory, path])) == len(project_directory):
         return
 
-    if "local" in config and config.getboolean("local") is False:
-        raise aiohttp.web.HTTPForbidden(text="The path is not allowed")
+    raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=f"The path {path} is not allowed")
 
 
 def get_mountpoint(path: str):

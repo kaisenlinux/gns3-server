@@ -19,7 +19,7 @@ import sys
 import asyncio
 
 
-class Pool():
+class Pool:
     """
     Limit concurrency for running parallel tasks
     """
@@ -40,10 +40,7 @@ class Pool():
         while len(self._tasks) > 0 or len(pending) > 0:
             while len(self._tasks) > 0 and len(pending) < self._concurrency:
                 task, args, kwargs = self._tasks.pop(0)
-                if sys.version_info >= (3, 7):
-                    t = asyncio.create_task(task(*args, **kwargs))
-                else:
-                    t = asyncio.get_event_loop().create_task(task(*args, **kwargs))
+                t = asyncio.create_task(task(*args, **kwargs))
                 pending.add(t)
             (done, pending) = await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED)
             for task in done:
@@ -65,5 +62,5 @@ def main():
     loop.run_until_complete(pool.join())
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()

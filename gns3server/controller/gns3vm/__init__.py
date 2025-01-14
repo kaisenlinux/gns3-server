@@ -18,7 +18,6 @@
 import sys
 import copy
 import asyncio
-import aiohttp
 import ipaddress
 
 from ...utils.asyncio import locking
@@ -29,8 +28,10 @@ from .remote_gns3_vm import RemoteGNS3VM
 from .gns3_vm_error import GNS3VMError
 from ...version import __version__
 from ..compute import ComputeError
+from ..controller_error import ControllerError
 
 import logging
+
 log = logging.getLogger(__name__)
 
 
@@ -60,37 +61,47 @@ class GNS3VM:
         :returns: Return list of engines supported by GNS3 for the GNS3VM
         """
 
-        download_url = "https://github.com/GNS3/gns3-gui/releases/download/v{version}/GNS3.VM.VMware.Workstation.{version}.zip".format(version=__version__)
+        download_url = "https://github.com/GNS3/gns3-gui/releases/download/v{version}/GNS3.VM.VMware.Workstation.{version}.zip".format(
+            version=__version__
+        )
         vmware_info = {
             "engine_id": "vmware",
-            "description": 'VMware is the recommended choice for best performances.<br>The GNS3 VM can be <a href="{}">downloaded here</a>.'.format(download_url),
+            "description": f'VMware is the recommended choice for best performances.<br>The GNS3 VM can be <a href="{download_url}">downloaded here</a>.',
             "support_when_exit": True,
             "support_headless": True,
-            "support_ram": True
+            "support_ram": True,
         }
         if sys.platform.startswith("darwin"):
             vmware_info["name"] = "VMware Fusion (recommended)"
         else:
             vmware_info["name"] = "VMware Workstation / Player (recommended)"
 
-        download_url = "https://github.com/GNS3/gns3-gui/releases/download/v{version}/GNS3.VM.Hyper-V.{version}.zip".format(version=__version__)
+        download_url = (
+            "https://github.com/GNS3/gns3-gui/releases/download/v{version}/GNS3.VM.Hyper-V.{version}.zip".format(
+                version=__version__
+            )
+        )
         hyperv_info = {
             "engine_id": "hyper-v",
             "name": "Hyper-V",
-            "description": 'Hyper-V support (Windows 10/Server 2016 and above). Nested virtualization must be supported and enabled (Intel processor only)<br>The GNS3 VM can be <a href="{}">downloaded here</a>'.format(download_url),
+            "description": f'Hyper-V support (Windows 10/Server 2016 and above). Nested virtualization must be supported and enabled (Intel processor only)<br>The GNS3 VM can be <a href="{download_url}">downloaded here</a>',
             "support_when_exit": True,
             "support_headless": False,
-            "support_ram": True
+            "support_ram": True,
         }
 
-        download_url = "https://github.com/GNS3/gns3-gui/releases/download/v{version}/GNS3.VM.VirtualBox.{version}.zip".format(version=__version__)
+        download_url = (
+            "https://github.com/GNS3/gns3-gui/releases/download/v{version}/GNS3.VM.VirtualBox.{version}.zip".format(
+                version=__version__
+            )
+        )
         virtualbox_info = {
             "engine_id": "virtualbox",
             "name": "VirtualBox",
-            "description": 'VirtualBox support. Nested virtualization for both Intel and AMD processors is supported since version 6.1<br>The GNS3 VM can be <a href="{}">downloaded here</a>'.format(download_url),
+            "description": f'VirtualBox support. Nested virtualization for both Intel and AMD processors is supported since version 6.1<br>The GNS3 VM can be <a href="{download_url}">downloaded here</a>',
             "support_when_exit": True,
             "support_headless": True,
-            "support_ram": True
+            "support_ram": True,
         }
 
         remote_info = {
@@ -99,12 +110,10 @@ class GNS3VM:
             "description": "Use a remote GNS3 server as the GNS3 VM.",
             "support_when_exit": False,
             "support_headless": False,
-            "support_ram": False
+            "support_ram": False,
         }
 
-        engines = [vmware_info,
-                   virtualbox_info,
-                   remote_info]
+        engines = [vmware_info, virtualbox_info, remote_info]
 
         if sys.platform.startswith("win"):
             engines.append(hyperv_info)
@@ -246,9 +255,9 @@ class GNS3VM:
         elif engine == "remote":
             self._engines["remote"] = RemoteGNS3VM(self._controller)
             return self._engines["remote"]
-        raise NotImplementedError("The engine {} for the GNS3 VM is not supported".format(engine))
+        raise NotImplementedError(f"The engine {engine} for the GNS3 VM is not supported")
 
-    def __json__(self):
+    def asdict(self):
         return self._settings
 
     @locking
@@ -260,7 +269,7 @@ class GNS3VM:
         engine = self._get_engine(engine)
         vms = []
         try:
-            for vm in (await engine.list()):
+            for vm in await engine.list():
                 vms.append({"vmname": vm["vmname"]})
         except GNS3VMError as e:
             # We raise error only if user activated the GNS3 VM
@@ -280,15 +289,14 @@ class GNS3VM:
             except GNS3VMError as e:
                 # User will receive the error later when they will try to use the node
                 try:
-                    compute = await self._controller.add_compute(compute_id="vm",
-                                                                 name="GNS3 VM ({})".format(self.current_engine().vmname),
-                                                                 host=None,
-                                                                 force=True)
+                    compute = await self._controller.add_compute(
+                        compute_id="vm", name=f"GNS3 VM ({self.current_engine().vmname})", host=None, force=True
+                    )
                     compute.set_last_error(str(e))
 
-                except aiohttp.web.HTTPConflict:
+                except ControllerError:
                     pass
-                log.error("Cannot start the GNS3 VM: {}".format(e))
+                log.error(f"Cannot start the GNS3 VM: {e}")
 
     async def exit_vm(self):
 
@@ -318,27 +326,27 @@ class GNS3VM:
             engine.vcpus = self._settings["vcpus"]
             engine.headless = self._settings["headless"]
             engine.port = self._settings["port"]
-            compute = await self._controller.add_compute(compute_id="vm",
-                                                         name="GNS3 VM is starting ({})".format(engine.vmname),
-                                                         host=None,
-                                                         force=True,
-                                                         connect=False)
+            compute = await self._controller.add_compute(
+                compute_id="vm", name=f"GNS3 VM is starting ({engine.vmname})", host=None, force=True, connect=False
+            )
 
             try:
                 await engine.start()
             except Exception as e:
                 await self._controller.delete_compute("vm")
-                log.error("Cannot start the GNS3 VM: {}".format(str(e)))
-                await compute.update(name="GNS3 VM ({})".format(engine.vmname))
+                log.error(f"Cannot start the GNS3 VM: {str(e)}")
+                await compute.update(name=f"GNS3 VM ({engine.vmname})")
                 compute.set_last_error(str(e))
                 raise e
             await compute.connect()  # we can connect now that the VM has started
-            await compute.update(name="GNS3 VM ({})".format(engine.vmname),
-                                 protocol=self.protocol,
-                                 host=self.ip_address,
-                                 port=self.port,
-                                 user=self.user,
-                                 password=self.password)
+            await compute.update(
+                name=f"GNS3 VM ({engine.vmname})",
+                protocol=self.protocol,
+                host=self.ip_address,
+                port=self.port,
+                user=self.user,
+                password=self.password,
+            )
 
             # check if the VM is in the same subnet as the local server, start 10 seconds later to give
             # some time for the compute in the VM to be ready for requests
@@ -357,7 +365,7 @@ class GNS3VM:
                     vm_interface_netmask = interface["netmask"]
                     break
             if vm_interface_netmask:
-                vm_network = ipaddress.ip_interface("{}/{}".format(compute.host_ip, vm_interface_netmask)).network
+                vm_network = ipaddress.ip_interface(f"{compute.host_ip}/{vm_interface_netmask}").network
                 for compute_id in self._controller.computes:
                     if compute_id == "local":
                         compute = self._controller.get_compute(compute_id)
@@ -368,18 +376,16 @@ class GNS3VM:
                                 netmask = interface["netmask"]
                                 break
                         if netmask:
-                            compute_network = ipaddress.ip_interface("{}/{}".format(compute.host_ip, netmask)).network
+                            compute_network = ipaddress.ip_interface(f"{compute.host_ip}/{netmask}").network
                             if vm_network.compare_networks(compute_network) != 0:
-                                msg = "The GNS3 VM (IP={}, NETWORK={}) is not on the same network as the {} server (IP={}, NETWORK={}), please make sure the local server binding is in the same network as the GNS3 VM".format(self.ip_address,
-                                                                                                                                                                                                                                vm_network,
-                                                                                                                                                                                                                                compute_id,
-                                                                                                                                                                                                                                compute.host_ip,
-                                                                                                                                                                                                                                compute_network)
+                                msg = "The GNS3 VM (IP={}, NETWORK={}) is not on the same network as the {} server (IP={}, NETWORK={}), please make sure the local server binding is in the same network as the GNS3 VM".format(
+                                    self.ip_address, vm_network, compute_id, compute.host_ip, compute_network
+                                )
                                 self._controller.notification.controller_emit("log.warning", {"message": msg})
         except ComputeError as e:
-            log.warning("Could not check the VM is in the same subnet as the local server: {}".format(e))
-        except aiohttp.web.HTTPConflict as e:
-            log.warning("Could not check the VM is in the same subnet as the local server: {}".format(e.text))
+            log.warning(f"Could not check the VM is in the same subnet as the local server: {e}")
+        except ControllerError as e:
+            log.warning(f"Could not check the VM is in the same subnet as the local server: {e}")
 
     @locking
     async def _suspend(self):

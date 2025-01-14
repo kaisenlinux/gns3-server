@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 #
 # Copyright (C) 2015 GNS3 Technologies Inc.
 #
@@ -57,22 +56,13 @@ class VirtualBox(BaseManager):
     def find_vboxmanage(self):
 
         # look for VBoxManage
-        vboxmanage_path = self.config.get_section_config("VirtualBox").get("vboxmanage_path")
+        vboxmanage_path = self.config.settings.VirtualBox.vboxmanage_path
         if vboxmanage_path:
             if not os.path.isabs(vboxmanage_path):
                 vboxmanage_path = shutil.which(vboxmanage_path)
         else:
             log.info("A path to VBoxManage has not been configured, trying to find it...")
-            if sys.platform.startswith("win"):
-                if "VBOX_INSTALL_PATH" in os.environ:
-                    vboxmanage_path_windows = os.path.join(os.environ["VBOX_INSTALL_PATH"], "VBoxManage.exe")
-                    if os.path.exists(vboxmanage_path_windows):
-                        vboxmanage_path = vboxmanage_path_windows
-                elif "VBOX_MSI_INSTALL_PATH" in os.environ:
-                    vboxmanage_path_windows = os.path.join(os.environ["VBOX_MSI_INSTALL_PATH"], "VBoxManage.exe")
-                    if os.path.exists(vboxmanage_path_windows):
-                        vboxmanage_path = vboxmanage_path_windows
-            elif sys.platform.startswith("darwin"):
+            if sys.platform.startswith("darwin"):
                 vboxmanage_path_osx = "/Applications/VirtualBox.app/Contents/MacOS/VBoxManage"
                 if os.path.exists(vboxmanage_path_osx):
                     vboxmanage_path = vboxmanage_path_osx
@@ -80,16 +70,16 @@ class VirtualBox(BaseManager):
                 vboxmanage_path = shutil.which("vboxmanage")
 
         if vboxmanage_path and not os.path.exists(vboxmanage_path):
-            log.error("VBoxManage path '{}' doesn't exist".format(vboxmanage_path))
+            log.error(f"VBoxManage path '{vboxmanage_path}' doesn't exist")
 
         if not vboxmanage_path:
             raise VirtualBoxError("Could not find VBoxManage, please reboot if VirtualBox has just been installed")
         if not os.path.isfile(vboxmanage_path):
-            raise VirtualBoxError("VBoxManage '{}' is not accessible".format(vboxmanage_path))
+            raise VirtualBoxError(f"VBoxManage '{vboxmanage_path}' is not accessible")
         if not os.access(vboxmanage_path, os.X_OK):
             raise VirtualBoxError("VBoxManage is not executable")
         if os.path.basename(vboxmanage_path) not in ["VBoxManage", "VBoxManage.exe", "vboxmanage"]:
-            raise VirtualBoxError("Invalid VBoxManage executable name {}".format(os.path.basename(vboxmanage_path)))
+            raise VirtualBoxError(f"Invalid VBoxManage executable name {os.path.basename(vboxmanage_path)}")
 
         self._vboxmanage_path = vboxmanage_path
         return vboxmanage_path
@@ -109,9 +99,9 @@ class VirtualBox(BaseManager):
             command = [vboxmanage_path, "--nologo", subcommand]
             command.extend(args)
             command_string = " ".join(command)
+            log.info(f"Executing VBoxManage with command: {command_string}")
             env = os.environ.copy()
             env["LANG"] = "en"  # force english output because we rely on it to parse the output
-            log.info("Executing VBoxManage with command: {}".format(command_string))
             try:
                 process = await asyncio.create_subprocess_exec(
                     *command,
@@ -120,16 +110,16 @@ class VirtualBox(BaseManager):
                     env=env
                 )
             except (OSError, subprocess.SubprocessError) as e:
-                raise VirtualBoxError("Could not execute VBoxManage: {}".format(e))
+                raise VirtualBoxError(f"Could not execute VBoxManage: {e}")
 
             try:
                 stdout_data, stderr_data = await asyncio.wait_for(process.communicate(), timeout=timeout)
             except asyncio.TimeoutError:
-                raise VirtualBoxError("VBoxManage has timed out after {} seconds!".format(timeout))
+                raise VirtualBoxError(f"VBoxManage has timed out after {timeout} seconds!")
 
             if process.returncode:
                 vboxmanage_error = stderr_data.decode("utf-8", errors="ignore")
-                raise VirtualBoxError("VirtualBox has returned an error: {}".format(vboxmanage_error))
+                raise VirtualBoxError(f"VirtualBox has returned an error: {vboxmanage_error}")
 
             return stdout_data.decode("utf-8", errors="ignore").splitlines()
 
@@ -148,7 +138,7 @@ class VirtualBox(BaseManager):
         flag_inaccessible = False
         for prop in properties:
             try:
-                name, value = prop.split(':', 1)
+                name, value = prop.split(":", 1)
             except ValueError:
                 continue
             if name.strip() == "State" and value.strip() == "inaccessible":
@@ -168,11 +158,11 @@ class VirtualBox(BaseManager):
         await super().project_closed(project)
         hdd_files_to_close = await self._find_inaccessible_hdd_files()
         for hdd_file in hdd_files_to_close:
-            log.info("Closing VirtualBox VM disk file {}".format(os.path.basename(hdd_file)))
+            log.info(f"Closing VirtualBox VM disk file {os.path.basename(hdd_file)}")
             try:
                 await self.execute("closemedium", ["disk", hdd_file])
             except VirtualBoxError as e:
-                log.warning("Could not close VirtualBox VM disk file {}: {}".format(os.path.basename(hdd_file), e))
+                log.warning(f"Could not close VirtualBox VM disk file {os.path.basename(hdd_file)}: {e}")
                 continue
 
     async def list_vms(self, allow_clone=False):
@@ -199,7 +189,7 @@ class VirtualBox(BaseManager):
                 ram = 0
                 for info in info_results:
                     try:
-                        name, value = info.split('=', 1)
+                        name, value = info.split("=", 1)
                         if name.strip() == "memory":
                             ram = int(value.strip())
                             break
@@ -219,4 +209,4 @@ class VirtualBox(BaseManager):
         :returns: working directory name
         """
 
-        return os.path.join("vbox", "{}".format(name))
+        return os.path.join("vbox", f"{name}")

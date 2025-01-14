@@ -17,6 +17,7 @@
 
 import asyncio
 import pytest
+import pytest_asyncio
 from unittest.mock import MagicMock, patch
 
 from tests.utils import asyncio_patch, AsyncioMagicMock
@@ -24,8 +25,8 @@ from gns3server.compute.docker import Docker, DOCKER_PREFERRED_API_VERSION, DOCK
 from gns3server.compute.docker.docker_error import DockerError, DockerHttp404Error
 
 
-@pytest.fixture
-async def vm(loop):
+@pytest_asyncio.fixture
+async def vm():
 
     vm = Docker()
     vm._connected = True
@@ -34,6 +35,7 @@ async def vm(loop):
     return vm
 
 
+@pytest.mark.asyncio
 async def test_query_success(vm):
 
     response = MagicMock()
@@ -56,6 +58,7 @@ async def test_query_success(vm):
     assert data == {"c": False}
 
 
+@pytest.mark.asyncio
 async def test_query_error(vm):
 
     response = MagicMock()
@@ -76,6 +79,7 @@ async def test_query_error(vm):
                                            timeout=300)
 
 
+@pytest.mark.asyncio
 async def test_query_error_json(vm):
 
     response = MagicMock()
@@ -96,6 +100,7 @@ async def test_query_error_json(vm):
                                            timeout=300)
 
 
+@pytest.mark.asyncio
 async def test_list_images():
 
     response = [
@@ -135,6 +140,7 @@ async def test_list_images():
     assert {"image": "ubuntu:quantal"} in images
 
 
+@pytest.mark.asyncio
 async def test_pull_image():
 
     class Response:
@@ -163,6 +169,7 @@ async def test_pull_image():
             mock.assert_called_with("POST", "images/create", params={"fromImage": "ubuntu"}, timeout=None)
 
 
+@pytest.mark.asyncio
 async def test_docker_check_connection_docker_minimum_version(vm):
 
     response = {
@@ -177,6 +184,7 @@ async def test_docker_check_connection_docker_minimum_version(vm):
             await vm._check_connection()
 
 
+@pytest.mark.asyncio
 async def test_docker_check_connection_docker_preferred_version_against_newer(vm):
 
     response = {
@@ -190,6 +198,7 @@ async def test_docker_check_connection_docker_preferred_version_against_newer(vm
         assert vm._api_version == DOCKER_PREFERRED_API_VERSION
 
 
+@pytest.mark.asyncio
 async def test_docker_check_connection_docker_preferred_version_against_older(vm):
 
     response = {
@@ -238,7 +247,7 @@ async def test_install_busybox_dynamic_linked():
                 with pytest.raises(DockerError) as e:
                     dst_dir = Docker.resources_path()
                     await Docker.install_busybox(dst_dir)
-                assert str(e.value) == "No busybox executable could be found"
+                assert str(e.value) == "No busybox executable could be found, please install busybox (apt install busybox-static on Debian/Ubuntu) and make sure it is in your PATH"
 
 
 @pytest.mark.asyncio
@@ -249,4 +258,4 @@ async def test_install_busybox_no_executables():
             with pytest.raises(DockerError) as e:
                 dst_dir = Docker.resources_path()
                 await Docker.install_busybox(dst_dir)
-            assert str(e.value) == "No busybox executable could be found"
+            assert str(e.value) == "No busybox executable could be found, please install busybox (apt install busybox-static on Debian/Ubuntu) and make sure it is in your PATH"

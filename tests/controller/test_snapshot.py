@@ -61,16 +61,23 @@ def test_snapshot_filename(project):
 
 def test_json(project):
 
-    snapshot = Snapshot(project, filename="test1_260716_100439.gns3project")
-    assert snapshot.__json__() == {
+    snapshot = Snapshot(project, filename="snapshot_test_260716_100439.gns3project")
+    assert snapshot.asdict() == {
         "snapshot_id": snapshot._id,
-        "name": "test1",
+        "name": "snapshot_test",
         "project_id": project.id,
         "created_at": 1469527479
     }
 
 
-async def test_restore(project, controller):
+def test_invalid_snapshot_filename(project):
+
+    with pytest.raises(ValueError):
+        Snapshot(project, filename="snapshot_test_invalid_file.gns3project")
+
+
+@pytest.mark.asyncio
+async def test_restore(project, controller, config):
 
     compute = AsyncioMagicMock()
     compute.id = "local"
@@ -94,8 +101,7 @@ async def test_restore(project, controller):
     assert len(project.nodes) == 2
 
     controller._notification = MagicMock()
-    with patch("gns3server.config.Config.get_section_config", return_value={"local": True}):
-        await snapshot.restore()
+    await snapshot.restore()
 
     assert "snapshot.restored" in [c[0][0] for c in controller.notification.project_emit.call_args_list]
     # project.closed notification should not be send when restoring snapshots

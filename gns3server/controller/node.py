@@ -15,30 +15,48 @@
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-import ipaddress
-import aiohttp
 import asyncio
 import html
 import copy
 import uuid
 import os
 
-from .compute import ComputeConflict, ComputeError
+from .controller_error import (
+    ControllerError,
+    ControllerTimeoutError,
+    ComputeError,
+    ComputeConflictError
+)
 from .ports.port_factory import PortFactory, StandardPortFactory, DynamipsPortFactory
 from ..utils.images import images_directories
+from ..utils import macaddress_to_int, int_to_macaddress
 from ..config import Config
-from ..utils.qt import qt_font_to_style
 
 
 import logging
+
 log = logging.getLogger(__name__)
 
 
 class Node:
-    # These properties are used only on controller and are not forwarded to computes
-    CONTROLLER_ONLY_PROPERTIES = ["x", "y", "z", "locked", "width", "height", "symbol", "label", "console_host",
-                                  "port_name_format", "first_port_name", "port_segment_size", "ports",
-                                  "category", "console_auto_start"]
+    # These properties are used only on controller and are not forwarded to the compute
+    CONTROLLER_ONLY_PROPERTIES = [
+        "x",
+        "y",
+        "z",
+        "locked",
+        "width",
+        "height",
+        "symbol",
+        "label",
+        "console_host",
+        "port_name_format",
+        "first_port_name",
+        "port_segment_size",
+        "ports",
+        "category",
+        "console_auto_start",
+    ]
 
     def __init__(self, project, compute, name, node_id=None, node_type=None, template_id=None, **kwargs):
         """
@@ -68,6 +86,8 @@ class Node:
         self.name = name
         self._console = None
         self._console_type = None
+        self._aux = None
+        self._aux_type = None
         self._properties = None
         self._command_line = None
         self._node_directory = None
@@ -93,7 +113,7 @@ class Node:
 
         # This properties will be recompute
         ignore_properties = ("width", "height", "hover_symbol")
-        self.properties = kwargs.pop('properties', {})
+        self.properties = kwargs.pop("properties", {})
 
         # Update node properties with additional elements
         for prop in kwargs:
@@ -102,7 +122,7 @@ class Node:
                     try:
                         setattr(self, prop, kwargs[prop])
                     except AttributeError as e:
-                        log.critical("Cannot set attribute '{}'".format(prop))
+                        log.critical(f"Cannot set attribute '{prop}'")
                         raise e
                 else:
                     if prop not in self.CONTROLLER_ONLY_PROPERTIES and kwargs[prop] is not None and kwargs[prop] != "":
@@ -124,10 +144,7 @@ class Node:
         :returns: Boolean True if the node is always running
         like ethernet switch
         """
-        return self.node_type not in (
-            "qemu", "docker", "dynamips",
-            "vpcs", "vmware", "virtualbox",
-            "iou", "traceng")
+        return self.node_type not in ("qemu", "docker", "dynamips", "vpcs", "vmware", "virtualbox", "iou")
 
     @property
     def id(self):
@@ -162,12 +179,28 @@ class Node:
         self._console = val
 
     @property
+    def aux(self):
+        return self._aux
+
+    @aux.setter
+    def aux(self, val):
+        self._aux = val
+
+    @property
     def console_type(self):
         return self._console_type
 
     @console_type.setter
     def console_type(self, val):
         self._console_type = val
+
+    @property
+    def aux_type(self):
+        return self._aux_type
+
+    @aux_type.setter
+    def aux_type(self, val):
+        self._aux_type = val
 
     @property
     def console_auto_start(self):
@@ -267,8 +300,7 @@ class Node:
 
         try:
             if not val.startswith(":") and os.path.isabs(val):
-                server_config = Config.instance().get_section_config("Server")
-                default_symbol_directory = os.path.expanduser(server_config.get("symbols_path", "~/GNS3/symbols"))
+                default_symbol_directory = Config.instance().settings.Server.symbols_path
                 if os.path.commonprefix([default_symbol_directory, val]) != default_symbol_directory:
                     val = os.path.basename(val)
         except OSError:
@@ -278,14 +310,14 @@ class Node:
         try:
             self._width, self._height, filetype = self._project.controller.symbols.get_size(val)
         except (ValueError, OSError) as e:
-            log.error("Could not set symbol: {}".format(e))
+            log.error(f"Could not set symbol: {e}")
             # If symbol is invalid we replace it by the default
             self.symbol = ":/symbols/computer.svg"
         if self._label is None:
             # Apply to label user style or default
             try:
                 style = None  # FIXME: allow configuration of default label font & color on controller
-                #style = qt_font_to_style(self._project.controller.settings["GraphicsView"]["default_label_font"],
+                # style = qt_font_to_style(self._project.controller.settings["GraphicsView"]["default_label_font"],
                 #                         self._project.controller.settings["GraphicsView"]["default_label_color"])
             except KeyError:
                 style = "font-family: TypeWriter;font-size: 10.0;font-weight: bold;fill: #000000;fill-opacity: 1.0;"
@@ -295,7 +327,7 @@ class Node:
                 "text": html.escape(self._name),
                 "style": style,  # None: means the client will apply its default style
                 "x": None,  # None: means the client should center it
-                "rotation": 0
+                "rotation": 0,
             }
 
     @property
@@ -364,16 +396,18 @@ class Node:
         data["node_id"] = self._id
         if self._node_type == "docker":
             timeout = None
-
         else:
             timeout = 1200
         trial = 0
         while trial != 6:
             try:
-                response = await self._compute.post("/projects/{}/{}/nodes".format(self._project.id, self._node_type), data=data, timeout=timeout)
-            except ComputeConflict as e:
-                if e.response.get("exception") == "ImageMissingError":
-                    res = await self._upload_missing_image(self._node_type, e.response["image"])
+                response = await self._compute.post(
+                    f"/projects/{self._project.id}/{self._node_type}/nodes", data=data, timeout=timeout
+                )
+            except ComputeConflictError as e:
+                response = e.response()
+                if response.get("exception") == "ImageMissingError":
+                    res = await self._upload_missing_image(self._node_type, response["image"])
                     if not res:
                         raise e
                 else:
@@ -392,7 +426,8 @@ class Node:
 
         # When updating properties used only on controller we don't need to call the compute
         update_compute = False
-        old_json = self.__json__()
+        old_json = self.asdict()
+        old_name = self._name
 
         compute_properties = None
         # Update node properties with additional elements
@@ -405,8 +440,13 @@ class Node:
                 if prop == "properties":
                     compute_properties = kwargs[prop]
                 else:
-                    if prop == "name" and self.node_type == "dynamips" and self.status == "started":
-                        raise aiohttp.web.HTTPConflict(text="Sorry, it is not possible rename of a Dynamips node that is already powered on")
+                    if (
+                        prop == "name"
+                        and self.status == "started"
+                        and self._node_type
+                        not in ("cloud", "nat", "ethernet_switch", "ethernet_hub", "frame_relay_switch", "atm_switch")
+                    ):
+                        raise ControllerError("Sorry, it is not possible to rename a node that is already powered on")
                     setattr(self, prop, kwargs[prop])
 
         if compute_properties and "custom_adapters" in compute_properties:
@@ -415,11 +455,17 @@ class Node:
         self._list_ports()
         if update_compute:
             data = self._node_data(properties=compute_properties)
-            response = await self.put(None, data=data)
+            try:
+                response = await self.put(None, data=data)
+            except ComputeConflictError:
+                if old_name != self.name:
+                    # special case when the new name is already updated on controller but refused by the compute
+                    self.name = old_name
+                raise
             await self.parse_node_response(response.json)
-        elif old_json != self.__json__():
+        elif old_json != self.asdict():
             # We send notif only if object has changed
-            self.project.emit_notification("node.updated", self.__json__())
+            self.project.emit_notification("node.updated", self.asdict())
         self.project.dump()
 
     async def parse_node_response(self, response):
@@ -430,6 +476,8 @@ class Node:
         for key, value in response.items():
             if key == "console":
                 self._console = value
+            elif key == "aux":
+                self._aux = value
             elif key == "node_directory":
                 self._node_directory = value
             elif key == "command_line":
@@ -438,12 +486,19 @@ class Node:
                 self._status = value
             elif key == "console_type":
                 self._console_type = value
+            elif key == "aux_type":
+                self._aux_type = value
             elif key == "name":
                 self.name = value
-            elif key in ["node_id", "project_id", "console_host",
-                         "startup_config_content",
-                         "private_config_content",
-                         "startup_script"]:
+            elif key in [
+                "node_id",
+                "project_id",
+                "console_host",
+                "startup_config_content",
+                "private_config_content",
+                "startup_script",
+                "custom_adapters"
+            ]:
                 if key in self._properties:
                     del self._properties[key]
             else:
@@ -477,13 +532,32 @@ class Node:
         if self._console:
             # console is optional for builtin nodes
             data["console"] = self._console
-        if self._console_type and self._node_type not in ("cloud", "nat", "ethernet_hub", "frame_relay_switch", "atm_switch"):
+        if self._console_type and self._node_type not in (
+            "cloud",
+            "nat",
+            "ethernet_hub",
+            "frame_relay_switch",
+            "atm_switch",
+        ):
             # console_type is not supported by all builtin nodes excepting Ethernet switch
             data["console_type"] = self._console_type
+        if self._aux:
+            # aux is optional for builtin nodes
+            data["aux"] = self._aux
+        if self._aux_type and self._node_type not in (
+            "cloud",
+            "nat",
+            "ethernet_switch",
+            "ethernet_hub",
+            "frame_relay_switch",
+            "atm_switch",
+        ):
+            # aux_type is not supported by all builtin nodes
+            data["aux_type"] = self._aux_type
         if self.custom_adapters:
             data["custom_adapters"] = self.custom_adapters
 
-        # None properties are not be send. Because it can mean the emulator doesn't support it
+        # None properties are not be sent because it can mean the emulator doesn't support it
         for key in list(data.keys()):
             if data[key] is None or data[key] == {} or key in self.CONTROLLER_ONLY_PROPERTIES:
                 del data[key]
@@ -498,17 +572,15 @@ class Node:
         Start a node
         """
         try:
-            # For IOU we need to send the licence everytime
+            # For IOU: we need to send the licence everytime we start a node
             if self.node_type == "iou":
                 license_check = self._project.controller.iou_license.get("license_check", True)
                 iourc_content = self._project.controller.iou_license.get("iourc_content", None)
-                #if license_check and not iourc_content:
-                #    raise aiohttp.web.HTTPConflict(text="IOU licence is not configured")
                 await self.post("/start", timeout=240, data={"license_check": license_check, "iourc_content": iourc_content})
             else:
                 await self.post("/start", data=data, timeout=240)
         except asyncio.TimeoutError:
-            raise aiohttp.web.HTTPRequestTimeout(text="Timeout when starting {}".format(self._name))
+            raise ControllerTimeoutError(f"Timeout when starting {self._name}")
 
     async def stop(self):
         """
@@ -517,10 +589,10 @@ class Node:
         try:
             await self.post("/stop", timeout=240, dont_connect=True)
         # We don't care if a node is down at this step
-        except (ComputeError, aiohttp.ClientError, aiohttp.web.HTTPError):
+        except (ComputeError, ControllerError):
             pass
         except asyncio.TimeoutError:
-            raise aiohttp.web.HTTPRequestTimeout(text="Timeout when stopping {}".format(self._name))
+            raise ControllerTimeoutError(f"Timeout when stopping {self._name}")
 
     async def suspend(self):
         """
@@ -529,7 +601,7 @@ class Node:
         try:
             await self.post("/suspend", timeout=240)
         except asyncio.TimeoutError:
-            raise aiohttp.web.HTTPRequestTimeout(text="Timeout when reloading {}".format(self._name))
+            raise ControllerTimeoutError(f"Timeout when reloading {self._name}")
 
     async def reload(self):
         """
@@ -538,7 +610,7 @@ class Node:
         try:
             await self.post("/reload", timeout=240)
         except asyncio.TimeoutError:
-            raise aiohttp.web.HTTPRequestTimeout(text="Timeout when reloading {}".format(self._name))
+            raise ControllerTimeoutError(f"Timeout when reloading {self._name}")
 
     async def reset_console(self):
         """
@@ -549,54 +621,65 @@ class Node:
             try:
                 await self.post("/console/reset", timeout=240)
             except asyncio.TimeoutError:
-                raise aiohttp.web.HTTPRequestTimeout(text="Timeout when reset console {}".format(self._name))
+                raise ControllerTimeoutError(f"Timeout when reset console {self._name}")
 
     async def post(self, path, data=None, **kwargs):
         """
         HTTP post on the node
         """
         if data:
-            return (await self._compute.post("/projects/{}/{}/nodes/{}{}".format(self._project.id, self._node_type, self._id, path), data=data, **kwargs))
+            return await self._compute.post(
+                f"/projects/{self._project.id}/{self._node_type}/nodes/{self._id}{path}", data=data, **kwargs
+            )
         else:
-            return (await self._compute.post("/projects/{}/{}/nodes/{}{}".format(self._project.id, self._node_type, self._id, path), **kwargs))
+            return await self._compute.post(
+                f"/projects/{self._project.id}/{self._node_type}/nodes/{self._id}{path}", **kwargs
+            )
 
     async def put(self, path, data=None, **kwargs):
         """
-        HTTP post on the node
+        HTTP put on the node
         """
         if path is None:
-            path = "/projects/{}/{}/nodes/{}".format(self._project.id, self._node_type, self._id)
+            path = f"/projects/{self._project.id}/{self._node_type}/nodes/{self._id}"
         else:
-            path = "/projects/{}/{}/nodes/{}{}".format(self._project.id, self._node_type, self._id, path)
+            path = f"/projects/{self._project.id}/{self._node_type}/nodes/{self._id}{path}"
         if data:
-            return (await self._compute.put(path, data=data, **kwargs))
+            return await self._compute.put(path, data=data, **kwargs)
         else:
-            return (await self._compute.put(path, **kwargs))
+            return await self._compute.put(path, **kwargs)
 
     async def delete(self, path=None, **kwargs):
         """
         HTTP post on the node
         """
         if path is None:
-            return (await self._compute.delete("/projects/{}/{}/nodes/{}".format(self._project.id, self._node_type, self._id), **kwargs))
+            return await self._compute.delete(
+                f"/projects/{self._project.id}/{self._node_type}/nodes/{self._id}", **kwargs
+            )
         else:
-            return (await self._compute.delete("/projects/{}/{}/nodes/{}{}".format(self._project.id, self._node_type, self._id, path), **kwargs))
+            return await self._compute.delete(
+                f"/projects/{self._project.id}/{self._node_type}/nodes/{self._id}{path}", **kwargs
+            )
 
     async def _upload_missing_image(self, type, img):
         """
         Search an image on local computer and upload it to remote compute
         if the image exists
         """
+
         for directory in images_directories(type):
             image = os.path.join(directory, img)
             if os.path.exists(image):
-                self.project.emit_notification("log.info", {"message": "Uploading missing image {}".format(img)})
+                self.project.emit_notification("log.info", {"message": f"Uploading missing image {img}"})
                 try:
-                    with open(image, 'rb') as f:
-                        await self._compute.post("/{}/images/{}".format(self._node_type, os.path.basename(img)), data=f, timeout=None)
+                    with open(image, "rb") as f:
+                        await self._compute.post(
+                            f"/{self._node_type}/images/{os.path.basename(img)}", data=f, timeout=None
+                        )
                 except OSError as e:
-                    raise aiohttp.web.HTTPConflict(text="Can't upload {}: {}".format(image, str(e)))
-                self.project.emit_notification("log.info", {"message": "Upload finished for {}".format(img)})
+                    raise ControllerError(f"Can't upload {image}: {str(e)}")
+                self.project.emit_notification("log.info", {"message": f"Upload finished for {img}"})
                 return True
         return False
 
@@ -604,13 +687,21 @@ class Node:
         """
         Compute the idle PC for a dynamips node
         """
-        return (await self._compute.get("/projects/{}/{}/nodes/{}/auto_idlepc".format(self._project.id, self._node_type, self._id), timeout=240)).json
+        return (
+            await self._compute.get(
+                f"/projects/{self._project.id}/{self._node_type}/nodes/{self._id}/auto_idlepc", timeout=240
+            )
+        ).json
 
     async def dynamips_idlepc_proposals(self):
         """
         Compute a list of potential idle PC
         """
-        return (await self._compute.get("/projects/{}/{}/nodes/{}/idlepc_proposals".format(self._project.id, self._node_type, self._id), timeout=240)).json
+        return (
+            await self._compute.get(
+                f"/projects/{self._project.id}/{self._node_type}/nodes/{self._id}/idlepc_proposals", timeout=240
+            )
+        ).json
 
     def get_port(self, adapter_number, port_number):
         """
@@ -638,7 +729,7 @@ class Node:
                 atm_port.add(int(dest.split(":")[0]))
             atm_port = sorted(atm_port)
             for port in atm_port:
-                self._ports.append(PortFactory("{}".format(port), 0, 0, port, "atm"))
+                self._ports.append(PortFactory(f"{port}", 0, 0, port, "atm"))
             return
 
         elif self._node_type == "frame_relay_switch":
@@ -649,7 +740,7 @@ class Node:
                 frame_relay_port.add(int(dest.split(":")[0]))
             frame_relay_port = sorted(frame_relay_port)
             for port in frame_relay_port:
-                self._ports.append(PortFactory("{}".format(port), 0, 0, port, "frame_relay"))
+                self._ports.append(PortFactory(f"{port}", 0, 0, port, "frame_relay"))
             return
         elif self._node_type == "dynamips":
             self._ports = DynamipsPortFactory(self._properties)
@@ -661,16 +752,24 @@ class Node:
                     if custom_adapter["adapter_number"] == adapter_number:
                         custom_adapter_settings = custom_adapter
                         break
-                port_name = "eth{}".format(adapter_number)
+                port_name = f"eth{adapter_number}"
                 port_name = custom_adapter_settings.get("port_name", port_name)
-                self._ports.append(PortFactory(port_name, 0, adapter_number, 0, "ethernet", short_name=port_name))
+                mac_address = custom_adapter_settings.get("mac_address")
+                if not mac_address and "mac_address" in self._properties:
+                    mac_address = int_to_macaddress(macaddress_to_int(self._properties["mac_address"]) + adapter_number)
+
+                port = PortFactory(port_name, 0, adapter_number, 0, "ethernet", short_name=port_name)
+                port.mac_address = mac_address
+                self._ports.append(port)
         elif self._node_type in ("ethernet_switch", "ethernet_hub"):
             # Basic node we don't want to have adapter number
             port_number = 0
             for port in self._properties.get("ports_mapping", []):
-                self._ports.append(PortFactory(port["name"], 0, 0, port_number, "ethernet", short_name="e{}".format(port_number)))
+                self._ports.append(
+                    PortFactory(port["name"], 0, 0, port_number, "ethernet", short_name=f"e{port_number}")
+                )
                 port_number += 1
-        elif self._node_type in ("vpcs", "traceng"):
+        elif self._node_type in ("vpcs"):
             self._ports.append(PortFactory("Ethernet0", 0, 0, 0, "ethernet", short_name="e0"))
         elif self._node_type in ("cloud", "nat"):
             port_number = 0
@@ -678,23 +777,29 @@ class Node:
                 self._ports.append(PortFactory(port["name"], 0, 0, port_number, "ethernet", short_name=port["name"]))
                 port_number += 1
         else:
-            self._ports = StandardPortFactory(self._properties, self._port_by_adapter, self._first_port_name, self._port_name_format, self._port_segment_size, self._custom_adapters)
+            self._ports = StandardPortFactory(
+                self._properties,
+                self._port_by_adapter,
+                self._first_port_name,
+                self._port_name_format,
+                self._port_segment_size,
+                self._custom_adapters,
+            )
 
     def __repr__(self):
-        return "<gns3server.controller.Node {} {}>".format(self._node_type, self._name)
+        return f"<gns3server.controller.Node {self._node_type} {self._name}>"
 
     def __eq__(self, other):
         if not isinstance(other, Node):
             return False
         return self.id == other.id and other.project.id == self.project.id
 
-    def __json__(self, topology_dump=False):
+    def asdict(self, topology_dump=False):
         """
-        :param topology_dump: Filter to keep only properties require for saving on disk
+        :param topology_dump: Filter to keep only properties required for saving on disk
         """
 
-        if topology_dump:
-            return {
+        topology = {
                 "compute_id": str(self._compute.id),
                 "node_id": self._id,
                 "node_type": self._node_type,
@@ -703,6 +808,8 @@ class Node:
                 "console": self._console,
                 "console_type": self._console_type,
                 "console_auto_start": self._console_auto_start,
+                "aux": self._aux,
+                "aux_type": self._aux_type,
                 "properties": self._properties,
                 "label": self._label,
                 "x": self._x,
@@ -715,45 +822,19 @@ class Node:
                 "port_name_format": self._port_name_format,
                 "port_segment_size": self._port_segment_size,
                 "first_port_name": self._first_port_name,
-                "custom_adapters": self._custom_adapters
-            }
-
-        # add brackets around console host for http/https console type
-        console_host = str(self._compute.console_host)
-        if self._console_type == "http" or self._console_type == "https":
-            try:
-                ip = ipaddress.ip_address(console_host)
-                if isinstance(ip, ipaddress.IPv6Address):
-                        console_host = '[' + console_host + ']'
-            except ValueError:
-                pass
-
-        return {
-            "compute_id": str(self._compute.id),
-            "project_id": self._project.id,
-            "node_id": self._id,
-            "template_id": self._template_id,
-            "node_type": self._node_type,
-            "node_directory": self._node_directory,
-            "name": self._name,
-            "console": self._console,
-            "console_host": console_host,
-            "console_type": self._console_type,
-            "console_auto_start": self._console_auto_start,
-            "command_line": self._command_line,
-            "properties": self._properties,
-            "status": self._status,
-            "label": self._label,
-            "x": self._x,
-            "y": self._y,
-            "z": self._z,
-            "locked": self._locked,
-            "width": self._width,
-            "height": self._height,
-            "symbol": self._symbol,
-            "port_name_format": self._port_name_format,
-            "port_segment_size": self._port_segment_size,
-            "first_port_name": self._first_port_name,
-            "custom_adapters": self._custom_adapters,
-            "ports": [port.__json__() for port in self.ports]
+                "custom_adapters": self._custom_adapters,
         }
+
+        if topology_dump:
+            return topology
+
+        additional_data = {
+            "project_id": self._project.id,
+            "command_line": self._command_line,
+            "status": self._status,
+            "console_host": str(self._compute.console_host),
+            "node_directory": self._node_directory,
+            "ports": [port.asdict() for port in self.ports]
+        }
+        topology.update(additional_data)
+        return topology

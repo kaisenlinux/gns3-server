@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 #
 # Copyright (C) 2013 GNS3 Technologies Inc.
 #
@@ -49,7 +48,9 @@ class NIOEthernet(NIO):
 
         return "NIO Ethernet"
 
-    def __json__(self):
+    def asdict(self):
 
-        return {"type": "nio_ethernet",
-                "ethernet_device": self._ethernet_device}
+        return {
+            "type": "nio_ethernet",
+            "ethernet_device": self._ethernet_device
+        }

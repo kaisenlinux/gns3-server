@@ -18,53 +18,52 @@
 import os
 import html
 import json
-import copy
 import uuid
 import glob
 import shutil
 import zipfile
-import aiohttp
-import jsonschema
+import pydantic
 
+from typing import Optional
 
 from ..version import __version__
-from ..schemas.topology import TOPOLOGY_SCHEMA
-from ..schemas import dynamips_vm
 from ..utils.qt import qt_font_to_style
 from ..compute.dynamips import PLATFORMS_DEFAULT_RAM
+from .controller_error import ControllerError
+from .compute import Compute
+from .drawing import Drawing
+from .node import Node
+from .link import Link
+
+from gns3server.utils.hostname import is_ios_hostname_valid, is_rfc1123_hostname_valid, to_rfc1123_hostname, to_ios_hostname
+from gns3server.schemas.controller.topology import Topology
+from gns3server.schemas.compute.dynamips_nodes import DynamipsCreate
 
 import logging
+
 log = logging.getLogger(__name__)
 
 
-GNS3_FILE_FORMAT_REVISION = 9
+GNS3_FILE_FORMAT_REVISION = 10
 
 
-def _check_topology_schema(topo):
+class DynamipsNodeValidation(DynamipsCreate):
+    name: Optional[str] = None
+
+
+def _check_topology_schema(topo, path):
     try:
-        jsonschema.validate(topo, TOPOLOGY_SCHEMA)
+        Topology.model_validate(topo)
 
         # Check the nodes property against compute schemas
         for node in topo["topology"].get("nodes", []):
-            schema = None
             if node["node_type"] == "dynamips":
-                schema = copy.deepcopy(dynamips_vm.VM_CREATE_SCHEMA)
+                DynamipsNodeValidation.model_validate(node.get("properties", {}))
 
-            if schema:
-                # Properties send to compute but in an other place in topology
-                delete_properties = ["name", "node_id"]
-                for prop in delete_properties:
-                    del schema["properties"][prop]
-                schema["required"] = [p for p in schema["required"] if p not in delete_properties]
-
-                jsonschema.validate(node.get("properties", {}), schema)
-
-    except jsonschema.ValidationError as e:
-        error = "Invalid data in topology file: {} in schema: {}".format(
-            e.message,
-            json.dumps(e.schema))
-        log.debug(error)
-        raise aiohttp.web.HTTPConflict(text=error)
+    except pydantic.ValidationError as e:
+        error = f"Invalid data in topology file {path}: {e}"
+        log.critical(error)
+        raise ControllerError(error)
 
 
 def project_to_topology(project):
@@ -88,40 +87,38 @@ def project_to_topology(project):
         "show_interface_labels": project.show_interface_labels,
         "variables": project.variables,
         "supplier": project.supplier,
-        "topology": {
-            "nodes": [],
-            "links": [],
-            "computes": [],
-            "drawings": []
-        },
+        "topology": {"nodes": [], "links": [], "computes": [], "drawings": []},
         "type": "topology",
         "revision": GNS3_FILE_FORMAT_REVISION,
-        "version": __version__
+        "version": __version__,
     }
 
     for node in project.nodes.values():
-        if hasattr(node, "__json__"):
-            data["topology"]["nodes"].append(node.__json__(topology_dump=True))
+        if isinstance(node, Node):
+            data["topology"]["nodes"].append(node.asdict(topology_dump=True))
         else:
             data["topology"]["nodes"].append(node)
     for link in project.links.values():
-        if hasattr(link, "__json__"):
-            data["topology"]["links"].append(link.__json__(topology_dump=True))
+        if isinstance(link, Link):
+            data["topology"]["links"].append(link.asdict(topology_dump=True))
         else:
             data["topology"]["links"].append(link)
     for drawing in project.drawings.values():
-        if hasattr(drawing, "__json__"):
-            data["topology"]["drawings"].append(drawing.__json__(topology_dump=True))
+        if isinstance(drawing, Drawing):
+            data["topology"]["drawings"].append(drawing.asdict(topology_dump=True))
         else:
             data["topology"]["drawings"].append(drawing)
     for compute in project.computes:
-        if hasattr(compute, "__json__"):
-            compute = compute.__json__(topology_dump=True)
-            if compute["compute_id"] not in ("vm", "local", ):
+        if isinstance(compute, Compute):
+            compute = compute.asdict(topology_dump=True)
+            if compute["compute_id"] not in (
+                "vm",
+                "local",
+            ):
                 data["topology"]["computes"].append(compute)
         elif isinstance(compute, dict):
             data["topology"]["computes"].append(compute)
-    _check_topology_schema(data)
+    _check_topology_schema(data, project.path)
     return data
 
 
@@ -129,15 +126,20 @@ def load_topology(path):
     """
     Open a topology file, patch it for last GNS3 release and return it
     """
-    log.debug("Read topology %s", path)
+
+    log.debug(f"Read topology {path}")
     try:
         with open(path, encoding="utf-8") as f:
             topo = json.load(f)
     except (OSError, UnicodeDecodeError, ValueError) as e:
-        raise aiohttp.web.HTTPConflict(text="Could not load topology {}: {}".format(path, str(e)))
+        raise ControllerError(f"Could not load topology {path}: {str(e)}")
 
     if topo.get("revision", 0) > GNS3_FILE_FORMAT_REVISION:
-        raise aiohttp.web.HTTPConflict(text="This project was created with more recent version of GNS3 (file revision: {}). Please upgrade GNS3 to version {} or later".format(topo["revision"], topo["version"]))
+        raise ControllerError(
+            "This project was created with more recent version of GNS3 (file revision: {}). Please upgrade GNS3 to version {} or later".format(
+                topo["revision"], topo["version"]
+            )
+        )
 
     changed = False
     if "revision" not in topo or topo["revision"] < GNS3_FILE_FORMAT_REVISION:
@@ -145,7 +147,7 @@ def load_topology(path):
         try:
             shutil.copy(path, path + ".backup{}".format(topo.get("revision", 0)))
         except OSError as e:
-            raise aiohttp.web.HTTPConflict(text="Can't write backup of the topology {}: {}".format(path, str(e)))
+            raise ControllerError(f"Can't write backup of the topology {path}: {str(e)}")
         changed = True
         # update the version because we converted the topology
         topo["version"] = __version__
@@ -185,10 +187,14 @@ def load_topology(path):
         if variables:
             topo["variables"] = [var for var in variables if var.get("name")]
 
+    # Version before GNS3 3.0
+    if topo["revision"] < 10:
+        topo = _convert_2_2_0(topo, path)
+
     try:
-        _check_topology_schema(topo)
-    except aiohttp.web.HTTPConflict as e:
-        log.error("Can't load the topology %s", path)
+        _check_topology_schema(topo, path)
+    except ControllerError as e:
+        log.error("Can't load the topology %s, please check using the debug mode...", path)
         raise e
 
     if changed:
@@ -196,7 +202,31 @@ def load_topology(path):
             with open(path, "w+", encoding="utf-8") as f:
                 json.dump(topo, f, indent=4, sort_keys=True)
         except OSError as e:
-            raise aiohttp.web.HTTPConflict(text="Can't write the topology {}: {}".format(path, str(e)))
+            raise ControllerError(f"Can't write the topology {path}: {str(e)}")
+    return topo
+
+
+def _convert_2_2_0(topo, topo_path):
+    """
+    Convert topologies from GNS3 2.2.x to 3.0
+
+    Changes:
+     * Convert Qemu and Docker node names to be a valid RFC1123 hostnames.
+     * Convert Dynamips and IOU node names to be a valid IOS hostnames.
+    """
+
+    topo["revision"] = 10
+
+    for node in topo.get("topology", {}).get("nodes", []):
+        if "properties" in node:
+            if node["node_type"] in ("qemu", "docker") and not is_rfc1123_hostname_valid(node["name"]):
+                new_name = to_rfc1123_hostname(node["name"])
+                log.info(f"Convert node name {node['name']} to {new_name} (RFC1123)")
+                node["name"] = new_name
+            if node["node_type"] in ("dynamips", "iou") and not is_ios_hostname_valid(node["name"] ):
+                new_name = to_ios_hostname(node["name"])
+                log.info(f"Convert node name {node['name']} to {new_name} (IOS)")
+                node["name"] = new_name
     return topo
 
 
@@ -279,12 +309,12 @@ def _convert_2_0_0_beta_2(topo, topo_path):
             node_dir = os.path.join(dynamips_dir, node_id)
             try:
                 os.makedirs(os.path.join(node_dir, "configs"), exist_ok=True)
-                for path in glob.glob(os.path.join(glob.escape(dynamips_dir), "*_i{}_*".format(dynamips_id))):
+                for path in glob.glob(os.path.join(glob.escape(dynamips_dir), f"*_i{dynamips_id}_*")):
                     shutil.move(path, os.path.join(node_dir, os.path.basename(path)))
-                for path in glob.glob(os.path.join(glob.escape(dynamips_dir), "configs", "i{}_*".format(dynamips_id))):
+                for path in glob.glob(os.path.join(glob.escape(dynamips_dir), "configs", f"i{dynamips_id}_*")):
                     shutil.move(path, os.path.join(node_dir, "configs", os.path.basename(path)))
             except OSError as e:
-                raise aiohttp.web.HTTPConflict(text="Can't convert project {}: {}".format(topo_path, str(e)))
+                raise ControllerError(f"Can't convert project {topo_path}: {str(e)}")
     return topo
 
 
@@ -324,12 +354,7 @@ def _convert_1_3_later(topo, topo_path):
         "auto_start": topo.get("auto_start", False),
         "name": topo["name"],
         "project_id": topo.get("project_id"),
-        "topology": {
-            "links": [],
-            "drawings": [],
-            "computes": [],
-            "nodes": []
-        }
+        "topology": {"links": [], "drawings": [], "computes": [], "nodes": []},
     }
     if new_topo["project_id"] is None:
         new_topo["project_id"] = str(uuid.uuid4())  # Could arrive for topologues with drawing only
@@ -343,7 +368,7 @@ def _convert_1_3_later(topo, topo_path):
         compute = {
             "host": server.get("host", "localhost"),
             "port": server.get("port", 3080),
-            "protocol": server.get("protocol", "http")
+            "protocol": server.get("protocol", "http"),
         }
         if server["local"]:
             compute["compute_id"] = "local"
@@ -414,27 +439,40 @@ def _convert_1_3_later(topo, topo_path):
             node["symbol"] = ":/symbols/hub.svg"
             node["properties"]["ports_mapping"] = []
             for port in old_node.get("ports", []):
-                node["properties"]["ports_mapping"].append({
-                    "name": "Ethernet{}".format(port["port_number"] - 1),
-                    "port_number": port["port_number"] - 1
-                })
+                node["properties"]["ports_mapping"].append(
+                    {"name": "Ethernet{}".format(port["port_number"] - 1), "port_number": port["port_number"] - 1}
+                )
         elif old_node["type"] == "EthernetSwitch":
             node["node_type"] = "ethernet_switch"
             node["symbol"] = ":/symbols/ethernet_switch.svg"
             node["console_type"] = None
             node["properties"]["ports_mapping"] = []
             for port in old_node.get("ports", []):
-                node["properties"]["ports_mapping"].append({
-                    "name": "Ethernet{}".format(port["port_number"] - 1),
-                    "port_number": port["port_number"] - 1,
-                    "type": port["type"],
-                    "vlan": port["vlan"]
-                })
+                node["properties"]["ports_mapping"].append(
+                    {
+                        "name": "Ethernet{}".format(port["port_number"] - 1),
+                        "port_number": port["port_number"] - 1,
+                        "type": port["type"],
+                        "vlan": port["vlan"],
+                    }
+                )
         elif old_node["type"] == "FrameRelaySwitch":
             node["node_type"] = "frame_relay_switch"
             node["symbol"] = ":/symbols/frame_relay_switch.svg"
             node["console_type"] = None
-        elif old_node["type"].upper() in ["C1700", "C2600", "C2691", "C3600", "C3620", "C3640", "C3660", "C3725", "C3745", "C7200", "EtherSwitchRouter"]:
+        elif old_node["type"].upper() in [
+            "C1700",
+            "C2600",
+            "C2691",
+            "C3600",
+            "C3620",
+            "C3640",
+            "C3660",
+            "C3725",
+            "C3745",
+            "C7200",
+            "EtherSwitchRouter",
+        ]:
             if node["symbol"] is None:
                 node["symbol"] = ":/symbols/router.svg"
             node["node_type"] = "dynamips"
@@ -472,7 +510,7 @@ def _convert_1_3_later(topo, topo_path):
             symbol = old_node.get("symbol", ":/symbols/computer.svg")
             old_node["ports"] = _create_cloud(node, old_node, symbol)
         else:
-            raise aiohttp.web.HTTPConflict(text="Conversion of {} is not supported".format(old_node["type"]))
+            raise ControllerError("Conversion of {} is not supported".format(old_node["type"]))
 
         for prop in old_node.get("properties", {}):
             if prop not in ["console", "name", "console_type", "console_host", "use_ubridge"]:
@@ -492,23 +530,20 @@ def _convert_1_3_later(topo, topo_path):
             source_node = {
                 "adapter_number": ports[old_link["source_port_id"]].get("adapter_number", 0),
                 "port_number": ports[old_link["source_port_id"]].get("port_number", 0),
-                "node_id": node_id_to_node_uuid[old_link["source_node_id"]]
+                "node_id": node_id_to_node_uuid[old_link["source_node_id"]],
             }
             nodes.append(source_node)
 
             destination_node = {
                 "adapter_number": ports[old_link["destination_port_id"]].get("adapter_number", 0),
                 "port_number": ports[old_link["destination_port_id"]].get("port_number", 0),
-                "node_id": node_id_to_node_uuid[old_link["destination_node_id"]]
+                "node_id": node_id_to_node_uuid[old_link["destination_node_id"]],
             }
             nodes.append(destination_node)
         except KeyError:
             continue
 
-        link = {
-            "link_id": str(uuid.uuid4()),
-            "nodes": nodes
-        }
+        link = {"link_id": str(uuid.uuid4()), "nodes": nodes}
         new_topo["topology"]["links"].append(link)
 
     # Ellipse
@@ -521,7 +556,7 @@ def _convert_1_3_later(topo, topo_path):
             rx=int(ellipse["width"] / 2),
             ry=int(ellipse["height"] / 2),
             fill=ellipse.get("color", "#ffffff"),
-            border_style=_convert_border_style(ellipse)
+            border_style=_convert_border_style(ellipse),
         )
         new_ellipse = {
             "drawing_id": str(uuid.uuid4()),
@@ -529,7 +564,7 @@ def _convert_1_3_later(topo, topo_path):
             "y": int(ellipse["y"]),
             "z": int(ellipse.get("z", 0)),
             "rotation": int(ellipse.get("rotation", 0)),
-            "svg": svg
+            "svg": svg,
         }
         new_topo["topology"]["drawings"].append(new_ellipse)
 
@@ -550,12 +585,14 @@ def _convert_1_3_later(topo, topo_path):
             height=int(font_info[1]) * 2,
             width=int(font_info[1]) * len(note["text"]),
             fill="#" + note.get("color", "#00000000")[-6:],
-            opacity=round(1.0 / 255 * int(note.get("color", "#ffffffff")[:3][-2:], base=16), 2),  # Extract the alpha channel from the hexa version
+            opacity=round(
+                1.0 / 255 * int(note.get("color", "#ffffffff")[:3][-2:], base=16), 2
+            ),  # Extract the alpha channel from the hexa version
             family=font_info[0],
             size=int(font_info[1]),
             weight=weight,
             style=style,
-            text=html.escape(note["text"])
+            text=html.escape(note["text"]),
         )
         new_note = {
             "drawing_id": str(uuid.uuid4()),
@@ -563,7 +600,7 @@ def _convert_1_3_later(topo, topo_path):
             "y": int(note["y"]),
             "z": int(note.get("z", 0)),
             "rotation": int(note.get("rotation", 0)),
-            "svg": svg
+            "svg": svg,
         }
         new_topo["topology"]["drawings"].append(new_note)
 
@@ -583,7 +620,7 @@ def _convert_1_3_later(topo, topo_path):
             "y": int(image["y"]),
             "z": int(image.get("z", 0)),
             "rotation": int(image.get("rotation", 0)),
-            "svg": os.path.basename(img_path)
+            "svg": os.path.basename(img_path),
         }
         new_topo["topology"]["drawings"].append(new_image)
 
@@ -593,7 +630,7 @@ def _convert_1_3_later(topo, topo_path):
             height=int(rectangle["height"]),
             width=int(rectangle["width"]),
             fill=rectangle.get("color", "#ffffff"),
-            border_style=_convert_border_style(rectangle)
+            border_style=_convert_border_style(rectangle),
         )
         new_rectangle = {
             "drawing_id": str(uuid.uuid4()),
@@ -601,7 +638,7 @@ def _convert_1_3_later(topo, topo_path):
             "y": int(rectangle["y"]),
             "z": int(rectangle.get("z", 0)),
             "rotation": int(rectangle.get("rotation", 0)),
-            "svg": svg
+            "svg": svg,
         }
         new_topo["topology"]["drawings"].append(new_rectangle)
 
@@ -615,12 +652,7 @@ def _convert_1_3_later(topo, topo_path):
 
 
 def _convert_border_style(element):
-    QT_DASH_TO_SVG = {
-        2: "25, 25",
-        3: "5, 25",
-        4: "5, 25, 25",
-        5: "25, 25, 5, 25, 5"
-    }
+    QT_DASH_TO_SVG = {2: "25, 25", 3: "5, 25", 4: "5, 25, 25", 5: "25, 25, 5, 25, 5"}
     border_style = int(element.get("border_style", 0))
     style = ""
     if border_style == 1:  # No border
@@ -628,10 +660,9 @@ def _convert_border_style(element):
     elif border_style == 0:
         pass  # Solid line
     else:
-        style += 'stroke-dasharray="{}" '.format(QT_DASH_TO_SVG[border_style])
+        style += f'stroke-dasharray="{QT_DASH_TO_SVG[border_style]}" '
     style += 'stroke="{stroke}" stroke-width="{stroke_width}"'.format(
-        stroke=element.get("border_color", "#000000"),
-        stroke_width=element.get("border_width", 2)
+        stroke=element.get("border_color", "#000000"), stroke_width=element.get("border_width", 2)
     )
     return style
 
@@ -646,7 +677,7 @@ def _convert_label(label):
         "rotation": 0,
         "style": style,
         "x": int(label["x"]),
-        "y": int(label["y"])
+        "y": int(label["y"]),
     }
 
 
@@ -671,27 +702,27 @@ def _create_cloud(node, old_node, icon):
         elif old_port["name"].startswith("nio_nat"):
             continue
         else:
-            raise aiohttp.web.HTTPConflict(text="The conversion of cloud with {} is not supported".format(old_port["name"]))
+            raise ControllerError("The conversion of cloud with {} is not supported".format(old_port["name"]))
 
         if port_type == "udp":
             try:
                 _, lport, rhost, rport = old_port["name"].split(":")
             except ValueError:
-                raise aiohttp.web.HTTPConflict(text="UDP tunnel using IPV6 is not supported in cloud")
+                raise ControllerError("UDP tunnel using IPV6 is not supported in cloud")
             port = {
-                "name": "UDP tunnel {}".format(len(ports) + 1),
+                "name": f"UDP tunnel {len(ports) + 1}",
                 "port_number": len(ports) + 1,
                 "type": port_type,
                 "lport": int(lport),
                 "rhost": rhost,
-                "rport": int(rport)
+                "rport": int(rport),
             }
         else:
             port = {
                 "interface": old_port["name"].split(":")[1],
                 "name": old_port["name"].split(":")[1],
                 "port_number": len(ports) + 1,
-                "type": port_type
+                "type": port_type,
             }
         keep_ports.append(old_port)
         ports.append(port)
@@ -723,10 +754,14 @@ def _convert_snapshots(topo_dir):
 
                 if is_gns3_topo:
                     snapshot_arc = os.path.join(new_snapshots_dir, snapshot + ".gns3project")
-                    with zipfile.ZipFile(snapshot_arc, 'w', allowZip64=True) as myzip:
+                    with zipfile.ZipFile(snapshot_arc, "w", allowZip64=True) as myzip:
                         for root, dirs, files in os.walk(snapshot_dir):
                             for file in files:
-                                myzip.write(os.path.join(root, file), os.path.relpath(os.path.join(root, file), snapshot_dir), compress_type=zipfile.ZIP_DEFLATED)
+                                myzip.write(
+                                    os.path.join(root, file),
+                                    os.path.relpath(os.path.join(root, file), snapshot_dir),
+                                    compress_type=zipfile.ZIP_DEFLATED,
+                                )
 
         shutil.rmtree(old_snapshots_dir)
 
@@ -742,16 +777,7 @@ def _convert_qemu_node(node, old_node):
         node["console_type"] = None
         node["node_type"] = "nat"
         del old_node["properties"]
-        node["properties"] = {
-            "ports": [
-                {
-                    "interface": "eth1",
-                    "name": "nat0",
-                    "port_number": 0,
-                    "type": "ethernet"
-                }
-            ]
-        }
+        node["properties"] = {"ports": [{"interface": "eth1", "name": "nat0", "port_number": 0, "type": "ethernet"}]}
         if node["symbol"] is None:
             node["symbol"] = ":/symbols/cloud.svg"
         return node

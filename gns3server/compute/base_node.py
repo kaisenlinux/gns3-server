@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 #
 # Copyright (C) 2015 GNS3 Technologies Inc.
 #
@@ -18,8 +17,6 @@
 import sys
 import os
 import stat
-import logging
-import aiohttp
 import shutil
 import asyncio
 import tempfile
@@ -27,16 +24,18 @@ import psutil
 import platform
 import re
 
-from aiohttp.web import WebSocketResponse
+from fastapi import WebSocketDisconnect
 from gns3server.utils.interfaces import interfaces
+from gns3server.compute.compute_error import ComputeError
 from ..compute.port_manager import PortManager
 from ..utils.asyncio import wait_run_in_executor, locking
 from ..utils.asyncio.telnet_server import AsyncioTelnetServer
-from ..ubridge.hypervisor import Hypervisor
-from ..ubridge.ubridge_error import UbridgeError
+from gns3server.compute.ubridge.hypervisor import Hypervisor
+from gns3server.compute.ubridge.ubridge_error import UbridgeError
 from .nios.nio_udp import NIOUDP
 from .error import NodeError
 
+import logging
 
 log = logging.getLogger(__name__)
 
@@ -50,14 +49,29 @@ class BaseNode:
     :param node_id: Node instance identifier
     :param project: Project instance
     :param manager: parent node manager
-    :param console: TCP console port
-    :param aux: TCP aux console port
-    :param allocate_aux: Boolean if true will allocate an aux console port
+    :param console: console TCP port
+    :param console_type: console type
+    :param aux: auxiliary console TCP port
+    :param aux_type: auxiliary console type
     :param linked_clone: The node base image is duplicate/overlay (Each node data are independent)
     :param wrap_console: The console is wrapped using AsyncioTelnetServer
+    :param wrap_aux: The auxiliary console is wrapped using AsyncioTelnetServer
     """
 
-    def __init__(self, name, node_id, project, manager, console=None, console_type="telnet", aux=None, allocate_aux=False, linked_clone=True, wrap_console=False):
+    def __init__(
+        self,
+        name,
+        node_id,
+        project,
+        manager,
+        console=None,
+        console_type="telnet",
+        aux=None,
+        aux_type="none",
+        linked_clone=True,
+        wrap_console=False,
+        wrap_aux=False,
+    ):
 
         self._name = name
         self._usage = ""
@@ -68,22 +82,25 @@ class BaseNode:
         self._console = console
         self._aux = aux
         self._console_type = console_type
+        self._aux_type = aux_type
         self._temporary_directory = None
         self._hw_virtualization = False
         self._ubridge_hypervisor = None
         self._closed = False
         self._node_status = "stopped"
         self._command_line = ""
-        self._allocate_aux = allocate_aux
         self._wrap_console = wrap_console
-        self._wrapper_telnet_server = None
+        self._wrap_aux = wrap_aux
+        self._wrapper_telnet_servers = []
         self._wrap_console_reader = None
         self._wrap_console_writer = None
         self._internal_console_port = None
+        self._internal_aux_port = None
         self._custom_adapters = []
         self._ubridge_require_privileged_access = False
 
         if self._console is not None:
+            # use a previously allocated console port
             if console_type == "vnc":
                 vnc_console_start_port_range, vnc_console_end_port_range = self._get_vnc_console_port_range()
                 self._console = self._manager.port_manager.reserve_tcp_port(
@@ -97,30 +114,51 @@ class BaseNode:
             else:
                 self._console = self._manager.port_manager.reserve_tcp_port(self._console, self._project)
 
-        # We need to allocate aux before giving a random console port
         if self._aux is not None:
-            self._aux = self._manager.port_manager.reserve_tcp_port(self._aux, self._project)
+            # use a previously allocated auxiliary console port
+            if aux_type == "vnc":
+                # VNC is a special case and the range must be 5900-6000
+                self._aux = self._manager.port_manager.reserve_tcp_port(
+                    self._aux, self._project, port_range_start=5900, port_range_end=6000
+                )
+            elif aux_type == "none":
+                self._aux = None
+            else:
+                self._aux = self._manager.port_manager.reserve_tcp_port(self._aux, self._project)
 
         if self._console is None:
+            # allocate a new console
             if console_type == "vnc":
                 vnc_console_start_port_range, vnc_console_end_port_range = self._get_vnc_console_port_range()
                 self._console = self._manager.port_manager.get_free_tcp_port(
                     self._project,
                     port_range_start=vnc_console_start_port_range,
-                    port_range_end=vnc_console_end_port_range)
+                    port_range_end=vnc_console_end_port_range,
+                )
             elif console_type != "none":
                 self._console = self._manager.port_manager.get_free_tcp_port(self._project)
+
+        if self._aux is None:
+            # allocate a new auxiliary console
+            if aux_type == "vnc":
+                # VNC is a special case and the range must be 5900-6000
+                self._aux = self._manager.port_manager.get_free_tcp_port(
+                    self._project, port_range_start=5900, port_range_end=6000
+                )
+            elif aux_type != "none":
+                self._aux = self._manager.port_manager.get_free_tcp_port(self._project)
 
         if self._wrap_console:
             self._internal_console_port = self._manager.port_manager.get_free_tcp_port(self._project)
 
-        if self._aux is None and allocate_aux:
-            self._aux = self._manager.port_manager.get_free_tcp_port(self._project)
+        if self._wrap_aux:
+            self._internal_aux_port = self._manager.port_manager.get_free_tcp_port(self._project)
 
-        log.debug("{module}: {name} [{id}] initialized. Console port {console}".format(module=self.manager.module_name,
-                                                                                       name=self.name,
-                                                                                       id=self.id,
-                                                                                       console=self._console))
+        log.debug(
+            "{module}: {name} [{id}] initialized. Console port {console}".format(
+                module=self.manager.module_name, name=self.name, id=self.id, console=self._console
+            )
+        )
 
     def __del__(self):
 
@@ -205,10 +243,11 @@ class BaseNode:
         :param new_name: name
         """
 
-        log.info("{module}: {name} [{id}] renamed to {new_name}".format(module=self.manager.module_name,
-                                                                        name=self.name,
-                                                                        id=self.id,
-                                                                        new_name=new_name))
+        log.info(
+            "{module}: {name} [{id}] renamed to {new_name}".format(
+                module=self.manager.module_name, name=self.name, id=self.id, new_name=new_name
+            )
+        )
         self._name = new_name
 
     @property
@@ -273,7 +312,7 @@ class BaseNode:
             try:
                 self._temporary_directory = tempfile.mkdtemp()
             except OSError as e:
-                raise NodeError("Can't create temporary directory: {}".format(e))
+                raise NodeError(f"Can't create temporary directory: {e}")
         return self._temporary_directory
 
     def create(self):
@@ -281,9 +320,7 @@ class BaseNode:
         Creates the node.
         """
 
-        log.info("{module}: {name} [{id}] created".format(module=self.manager.module_name,
-                                                          name=self.name,
-                                                          id=self.id))
+        log.info("{module}: {name} [{id}] created".format(module=self.manager.module_name, name=self.name, id=self.id))
 
     async def delete(self):
         """
@@ -298,7 +335,7 @@ class BaseNode:
             try:
                 await wait_run_in_executor(shutil.rmtree, directory, onerror=set_rw)
             except OSError as e:
-                raise aiohttp.web.HTTPInternalServerError(text="Could not delete the node working directory: {}".format(e))
+                raise ComputeError(f"Could not delete the node working directory: {e}")
 
     def start(self):
         """
@@ -330,9 +367,9 @@ class BaseNode:
         if self._closed:
             return False
 
-        log.info("{module}: '{name}' [{id}]: is closing".format(module=self.manager.module_name,
-                                                                name=self.name,
-                                                                id=self.id))
+        log.info(
+            "{module}: '{name}' [{id}]: is closing".format(module=self.manager.module_name, name=self.name, id=self.id)
+        )
 
         if self._console:
             self._manager.port_manager.release_tcp_port(self._console, self._project)
@@ -343,6 +380,9 @@ class BaseNode:
         if self._aux:
             self._manager.port_manager.release_tcp_port(self._aux, self._project)
             self._aux = None
+        if self._wrap_aux:
+            self._manager.port_manager.release_tcp_port(self._internal_aux_port, self._project)
+            self._internal_aux_port = None
 
         self._closed = True
         return True
@@ -352,28 +392,27 @@ class BaseNode:
         Returns the VNC console port range.
         """
 
-        server_config = self._manager.config.get_section_config("Server")
-        vnc_console_start_port_range = server_config.getint("vnc_console_start_port_range", 5900)
-        vnc_console_end_port_range = server_config.getint("vnc_console_end_port_range", 10000)
+        vnc_console_start_port_range = self._manager.config.settings.Server.vnc_console_start_port_range
+        vnc_console_end_port_range = self._manager.config.settings.Server.vnc_console_end_port_range
 
         if not 5900 <= vnc_console_start_port_range <= 65535:
             raise NodeError("The VNC console start port range must be between 5900 and 65535")
         if not 5900 <= vnc_console_end_port_range <= 65535:
             raise NodeError("The VNC console start port range must be between 5900 and 65535")
         if vnc_console_start_port_range >= vnc_console_end_port_range:
-            raise NodeError(f"The VNC console start port range value ({vnc_console_start_port_range}) "
-                            f"cannot be above or equal to the end value ({vnc_console_end_port_range})")
+            raise NodeError(
+                f"The VNC console start port range value ({vnc_console_start_port_range}) "
+                f"cannot be above or equal to the end value ({vnc_console_end_port_range})"
+            )
 
         return vnc_console_start_port_range, vnc_console_end_port_range
 
-    async def start_wrap_console(self):
+    async def _wrap_telnet_proxy(self, internal_port, external_port):
         """
         Start a telnet proxy for the console allowing multiple telnet clients
         to be connected at the same time
         """
 
-        if not self._wrap_console or self._console_type != "telnet":
-            return
         remaining_trial = 60
         while True:
             try:
@@ -395,27 +434,41 @@ class BaseNode:
             echo=True
         )
         # warning: this will raise OSError exception if there is a problem...
-        self._wrapper_telnet_server = await asyncio.start_server(
-            server.run,
-            self._manager.port_manager.console_host,
-            self.console
-        )
+        telnet_server = await asyncio.start_server(server.run, self._manager.port_manager.console_host, external_port)
+        self._wrapper_telnet_servers.append(telnet_server)
+
+    async def start_wrap_console(self):
+        """
+        Start a Telnet proxy servers for the console and auxiliary console allowing multiple telnet clients
+        to be connected at the same time
+        """
+
+        if self._wrap_console and self._console_type == "telnet":
+            await self._wrap_telnet_proxy(self._internal_console_port, self.console)
+            log.info(
+                f"New Telnet proxy server for console started "
+                f"(internal port = {self._internal_console_port}, external port = {self.console})"
+            )
+
+        if self._wrap_aux and self._aux_type == "telnet":
+            await self._wrap_telnet_proxy(self._internal_aux_port, self.aux)
+            log.info(
+                f"New Telnet proxy server for auxiliary console started "
+                f"(internal port = {self._internal_aux_port}, external port = {self.aux})"
+            )
 
     async def stop_wrap_console(self):
         """
-        Stops the telnet proxy.
+        Stops the telnet proxy servers.
         """
 
-        if self._wrapper_telnet_server:
+        if self._wrap_console_writer:
             self._wrap_console_writer.close()
-            if sys.version_info >= (3, 7, 0):
-                try:
-                    await self._wrap_console_writer.wait_closed()
-                except ConnectionResetError:
-                    pass
-            self._wrapper_telnet_server.close()
-            await self._wrapper_telnet_server.wait_closed()
-            self._wrapper_telnet_server = None
+            await self._wrap_console_writer.wait_closed()
+        for telnet_proxy_server in self._wrapper_telnet_servers:
+            telnet_proxy_server.close()
+            await telnet_proxy_server.wait_closed()
+        self._wrapper_telnet_servers = []
 
     async def reset_wrap_console(self):
         """
@@ -425,88 +478,66 @@ class BaseNode:
         await self.stop_wrap_console()
         await self.start_wrap_console()
 
-    async def start_websocket_console(self, request):
+    async def start_websocket_console(self, websocket):
         """
         Connect to console using Websocket.
 
         :param ws: Websocket object
         """
 
+        log.info(
+            f"New client {websocket.client.host}:{websocket.client.port}  has connected to compute"
+            f" console WebSocket"
+        )
+
         if self.status != "started":
-            raise NodeError("Node {} is not started".format(self.name))
+            raise NodeError(f"Node {self.name} is not started")
 
         if self._console_type != "telnet":
-            raise NodeError("Node {} console type is not telnet".format(self.name))
+            raise NodeError(f"Node {self.name} console type is not telnet")
 
         try:
-            (telnet_reader, telnet_writer) = await asyncio.open_connection(self._manager.port_manager.console_host, self.console)
+            host = self._manager.port_manager.console_host
+            port = self.console
+            (telnet_reader, telnet_writer) = await asyncio.open_connection(host, port)
+            log.info(f"Connected to local Telnet server {host}:{port}")
         except ConnectionError as e:
-            raise NodeError("Cannot connect to node {} telnet server: {}".format(self.name, e))
-
-        log.info("Connected to Telnet server")
-
-        ws = WebSocketResponse()
-        await ws.prepare(request)
-        request.app['websockets'].add(ws)
-
-        log.info("New client has connected to console WebSocket")
+            raise NodeError(f"Cannot connect to node {self.name} telnet server: {e}")
 
         async def ws_forward(telnet_writer):
 
-            async for msg in ws:
-                if msg.type == aiohttp.WSMsgType.TEXT:
-                    telnet_writer.write(msg.data.encode())
-                    await telnet_writer.drain()
-                elif msg.type == aiohttp.WSMsgType.BINARY:
-                    telnet_writer.write(msg.data)
-                    await telnet_writer.drain()
-                elif msg.type == aiohttp.WSMsgType.ERROR:
-                    log.debug("Websocket connection closed with exception {}".format(ws.exception()))
+            try:
+                while True:
+                    data = await websocket.receive_text()
+                    if data:
+                        telnet_writer.write(data.encode())
+                        await telnet_writer.drain()
+            except WebSocketDisconnect:
+                log.info(
+                    f"Client {websocket.client.host}:{websocket.client.port} has disconnected from compute"
+                    f" console WebSocket"
+                )
 
         async def telnet_forward(telnet_reader):
 
-            while not ws.closed and not telnet_reader.at_eof():
+            while not telnet_reader.at_eof():
                 data = await telnet_reader.read(1024)
                 if data:
-                    await ws.send_bytes(data)
+                    await websocket.send_bytes(data)
 
-        try:
-            # keep forwarding websocket data in both direction
-            if sys.version_info >= (3, 11, 0):
-                # Starting with Python 3.11, passing coroutine objects to wait() directly is forbidden.
-                aws = [asyncio.create_task(ws_forward(telnet_writer)), asyncio.create_task(telnet_forward(telnet_reader))]
-            else:
-                aws = [ws_forward(telnet_writer), telnet_forward(telnet_reader)]
+        # keep forwarding websocket data in both direction
+        if sys.version_info >= (3, 11, 0):
+            # Starting with Python 3.11, passing coroutine objects to wait() directly is forbidden.
+            aws = [asyncio.create_task(ws_forward(telnet_writer)), asyncio.create_task(telnet_forward(telnet_reader))]
+        else:
+            aws = [ws_forward(telnet_writer), telnet_forward(telnet_reader)]
 
-            done, pending = await asyncio.wait(aws, return_when=asyncio.FIRST_COMPLETED)
-            for task in done:
-                if task.exception():
-                    log.warning(f"Exception while forwarding WebSocket data to Telnet server {task.exception()}")
-            for task in pending:
-                task.cancel()
-        finally:
-            log.info("Client has disconnected from console WebSocket")
-            if not ws.closed:
-                await ws.close()
-            request.app['websockets'].discard(ws)
-
-        return ws
-
-    @property
-    def allocate_aux(self):
-        """
-        :returns: Boolean allocate or not an aux console
-        """
-
-        return self._allocate_aux
-
-    @allocate_aux.setter
-    def allocate_aux(self, allocate_aux):
-        """
-        :returns: Boolean allocate or not an aux console
-        """
-
-        self._allocate_aux = allocate_aux
+        done, pending = await asyncio.wait(aws, return_when=asyncio.FIRST_COMPLETED)
+        for task in done:
+            if task.exception():
+                log.warning(f"Exception while forwarding WebSocket data to Telnet server {task.exception()}")
+        for task in pending:
+            task.cancel()
 
     @property
     def aux(self):
@@ -526,18 +557,28 @@ class BaseNode:
         :params aux: Console port (integer) or None to free the port
         """
 
-        if aux == self._aux:
+        if aux == self._aux or self._aux_type == "none":
             return
+
+        if self._aux_type == "vnc" and aux is not None and aux < 5900:
+            raise NodeError(f"VNC auxiliary console require a port superior or equal to 5900, current port is {aux}")
 
         if self._aux:
             self._manager.port_manager.release_tcp_port(self._aux, self._project)
             self._aux = None
         if aux is not None:
-            self._aux = self._manager.port_manager.reserve_tcp_port(aux, self._project)
-            log.info("{module}: '{name}' [{id}]: aux port set to {port}".format(module=self.manager.module_name,
-                                                                                name=self.name,
-                                                                                id=self.id,
-                                                                                port=aux))
+            if self.aux_type == "vnc":
+                self._aux = self._manager.port_manager.reserve_tcp_port(
+                    aux, self._project, port_range_start=5900, port_range_end=6000
+                )
+            else:
+                self._aux = self._manager.port_manager.reserve_tcp_port(aux, self._project)
+
+            log.info(
+                "{module}: '{name}' [{id}]: auxiliary console port set to {port}".format(
+                    module=self.manager.module_name, name=self.name, id=self.id, port=aux
+                )
+            )
 
     @property
     def console(self):
@@ -561,7 +602,7 @@ class BaseNode:
             return
 
         if self._console_type == "vnc" and console is not None and console < 5900:
-            raise NodeError("VNC console require a port superior or equal to 5900, current port is {}".format(console))
+            raise NodeError(f"VNC console require a port superior or equal to 5900, current port is {console}")
 
         if self._console:
             self._manager.port_manager.release_tcp_port(self._console, self._project)
@@ -573,15 +614,16 @@ class BaseNode:
                     console,
                     self._project,
                     port_range_start=vnc_console_start_port_range,
-                    port_range_end=vnc_console_end_port_range
+                    port_range_end=vnc_console_end_port_range,
                 )
             else:
                 self._console = self._manager.port_manager.reserve_tcp_port(console, self._project)
 
-            log.info("{module}: '{name}' [{id}]: console port set to {port}".format(module=self.manager.module_name,
-                                                                                    name=self.name,
-                                                                                    id=self.id,
-                                                                                    port=console))
+            log.info(
+                "{module}: '{name}' [{id}]: console port set to {port}".format(
+                    module=self.manager.module_name, name=self.name, id=self.id, port=console
+                )
+            )
 
     @property
     def console_type(self):
@@ -619,11 +661,53 @@ class BaseNode:
                 self._console = self._manager.port_manager.get_free_tcp_port(self._project)
 
         self._console_type = console_type
-        log.info("{module}: '{name}' [{id}]: console type set to {console_type} (console port is {console})".format(module=self.manager.module_name,
-                                                                                                                    name=self.name,
-                                                                                                                    id=self.id,
-                                                                                                                    console_type=console_type,
-                                                                                                                    console=self.console))
+        log.info(
+            "{module}: '{name}' [{id}]: console type set to {console_type} (console port is {console})".format(
+                module=self.manager.module_name,
+                name=self.name,
+                id=self.id,
+                console_type=console_type,
+                console=self.console,
+            )
+        )
+
+    @property
+    def aux_type(self):
+        """
+        Returns the auxiliary console type for this node.
+
+        :returns: aux type (string)
+        """
+
+        return self._aux_type
+
+    @aux_type.setter
+    def aux_type(self, aux_type):
+        """
+        Sets the auxiliary console type for this node.
+
+        :param aux_type: console type (string)
+        """
+
+        if aux_type != self._aux_type:
+            # get a new port if the aux type change
+            if self._aux:
+                self._manager.port_manager.release_tcp_port(self._aux, self._project)
+            if aux_type == "none":
+                # no need to allocate a port when the auxiliary console type is none
+                self._aux = None
+            elif aux_type == "vnc":
+                # VNC is a special case and the range must be 5900-6000
+                self._aux = self._manager.port_manager.get_free_tcp_port(self._project, 5900, 6000)
+            else:
+                self._aux = self._manager.port_manager.get_free_tcp_port(self._project)
+
+        self._aux_type = aux_type
+        log.info(
+            "{module}: '{name}' [{id}]: console type set to {aux_type} (auxiliary console port is {aux})".format(
+                module=self.manager.module_name, name=self.name, id=self.id, aux_type=aux_type, aux=self.aux
+            )
+        )
 
     @property
     def ubridge(self):
@@ -655,13 +739,10 @@ class BaseNode:
         :returns: path to uBridge
         """
 
-        path = self._manager.config.get_section_config("Server").get("ubridge_path", "ubridge")
-        if sys.platform.startswith("win") and hasattr(sys, "frozen"):
-            ubridge_dir = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(sys.executable)), "ubridge"))
-            os.environ["PATH"] = os.pathsep.join(ubridge_dir) + os.pathsep + os.environ.get("PATH", "")
-        path = shutil.which(path)
+        path = shutil.which(self._manager.config.settings.Server.ubridge_path)
         return path
 
+    @locking
     async def _ubridge_send(self, command):
         """
         Sends a command to uBridge hypervisor.
@@ -672,11 +753,13 @@ class BaseNode:
         if not self._ubridge_hypervisor or not self._ubridge_hypervisor.is_running():
             await self._start_ubridge(self._ubridge_require_privileged_access)
         if not self._ubridge_hypervisor or not self._ubridge_hypervisor.is_running():
-            raise NodeError("Cannot send command '{}': uBridge is not running".format(command))
+            raise NodeError(f"Cannot send command '{command}': uBridge is not running")
         try:
             await self._ubridge_hypervisor.send(command)
         except UbridgeError as e:
-            raise UbridgeError("Error while sending command '{}': {}: {}".format(command, e, self._ubridge_hypervisor.read_stdout()))
+            raise UbridgeError(
+                f"Error while sending command '{command}': {e}: {self._ubridge_hypervisor.read_stdout()}"
+            )
 
     @locking
     async def _start_ubridge(self, require_privileged_access=False):
@@ -689,19 +772,22 @@ class BaseNode:
             return
 
         if self.ubridge_path is None:
-            raise NodeError("uBridge is not available, path doesn't exist, or you just installed GNS3 and need to restart your user session to refresh user permissions.")
+            raise NodeError(
+                "uBridge is not available, path doesn't exist, or you just installed GNS3 and need to restart your user session to refresh user permissions."
+            )
 
         if require_privileged_access and not self._manager.has_privileged_access(self.ubridge_path):
             raise NodeError("uBridge requires root access or the capability to interact with network adapters")
 
-        server_config = self._manager.config.get_section_config("Server")
-        server_host = server_config.get("host")
+        server_host = self._manager.config.settings.Server.host
         if not self.ubridge:
             self._ubridge_hypervisor = Hypervisor(self._project, self.ubridge_path, self.working_dir, server_host)
-        log.info("Starting new uBridge hypervisor {}:{}".format(self._ubridge_hypervisor.host, self._ubridge_hypervisor.port))
+        log.info(f"Starting new uBridge hypervisor {self._ubridge_hypervisor.host}:{self._ubridge_hypervisor.port}")
         await self._ubridge_hypervisor.start()
         if self._ubridge_hypervisor:
-            log.info("Hypervisor {}:{} has successfully started".format(self._ubridge_hypervisor.host, self._ubridge_hypervisor.port))
+            log.info(
+                f"Hypervisor {self._ubridge_hypervisor.host}:{self._ubridge_hypervisor.port} has successfully started"
+            )
             await self._ubridge_hypervisor.connect()
         # save if privileged are required in case uBridge needs to be restarted in self._ubridge_send()
         self._ubridge_require_privileged_access = require_privileged_access
@@ -712,7 +798,7 @@ class BaseNode:
         """
 
         if self._ubridge_hypervisor and self._ubridge_hypervisor.is_running():
-            log.info("Stopping uBridge hypervisor {}:{}".format(self._ubridge_hypervisor.host, self._ubridge_hypervisor.port))
+            log.info(f"Stopping uBridge hypervisor {self._ubridge_hypervisor.host}:{self._ubridge_hypervisor.port}")
             await self._ubridge_hypervisor.stop()
         self._ubridge_hypervisor = None
 
@@ -725,26 +811,31 @@ class BaseNode:
         :param destination_nio: destination NIO instance
         """
 
-        await self._ubridge_send("bridge create {name}".format(name=bridge_name))
+        await self._ubridge_send(f"bridge create {bridge_name}")
 
         if not isinstance(destination_nio, NIOUDP):
             raise NodeError("Destination NIO is not UDP")
 
-        await self._ubridge_send('bridge add_nio_udp {name} {lport} {rhost} {rport}'.format(name=bridge_name,
-                                                                                                 lport=source_nio.lport,
-                                                                                                 rhost=source_nio.rhost,
-                                                                                                 rport=source_nio.rport))
+        await self._ubridge_send(
+            "bridge add_nio_udp {name} {lport} {rhost} {rport}".format(
+                name=bridge_name, lport=source_nio.lport, rhost=source_nio.rhost, rport=source_nio.rport
+            )
+        )
 
-        await self._ubridge_send('bridge add_nio_udp {name} {lport} {rhost} {rport}'.format(name=bridge_name,
-                                                                                                 lport=destination_nio.lport,
-                                                                                                 rhost=destination_nio.rhost,
-                                                                                                 rport=destination_nio.rport))
+        await self._ubridge_send(
+            "bridge add_nio_udp {name} {lport} {rhost} {rport}".format(
+                name=bridge_name, lport=destination_nio.lport, rhost=destination_nio.rhost, rport=destination_nio.rport
+            )
+        )
 
         if destination_nio.capturing:
-            await self._ubridge_send('bridge start_capture {name} "{pcap_file}"'.format(name=bridge_name,
-                                                                                             pcap_file=destination_nio.pcap_output_file))
+            await self._ubridge_send(
+                'bridge start_capture {name} "{pcap_file}"'.format(
+                    name=bridge_name, pcap_file=destination_nio.pcap_output_file
+                )
+            )
 
-        await self._ubridge_send('bridge start {name}'.format(name=bridge_name))
+        await self._ubridge_send(f"bridge start {bridge_name}")
         await self._ubridge_apply_filters(bridge_name, destination_nio.filters)
 
     async def update_ubridge_udp_connection(self, bridge_name, source_nio, destination_nio):
@@ -757,7 +848,7 @@ class BaseNode:
         """
 
         if self.ubridge:
-            await self._ubridge_send("bridge delete {name}".format(name=name))
+            await self._ubridge_send(f"bridge delete {name}")
 
     async def _ubridge_apply_filters(self, bridge_name, filters):
         """
@@ -767,15 +858,15 @@ class BaseNode:
         :param filters: Array of filter dictionary
         """
 
-        await self._ubridge_send('bridge reset_packet_filters ' + bridge_name)
+        await self._ubridge_send("bridge reset_packet_filters " + bridge_name)
         for packet_filter in self._build_filter_list(filters):
-            cmd = 'bridge add_packet_filter {} {}'.format(bridge_name, packet_filter)
+            cmd = f"bridge add_packet_filter {bridge_name} {packet_filter}"
             try:
                 await self._ubridge_send(cmd)
             except UbridgeError as e:
                 match = re.search(r"Cannot compile filter '(.*)': syntax error", str(e))
                 if match:
-                    message = "Warning: ignoring BPF packet filter '{}' due to syntax error".format(self.name, match.group(1))
+                    message = f"Warning: ignoring BPF packet filter '{self.name}' due to syntax error: {match.group(1)}"
                     log.warning(message)
                     self.project.emit("log.warning", {"message": message})
                 else:
@@ -789,18 +880,20 @@ class BaseNode:
         i = 0
         for (filter_type, values) in filters.items():
             if isinstance(values[0], str):
-                for line in values[0].split('\n'):
+                for line in values[0].split("\n"):
                     line = line.strip()
                     yield "{filter_name} {filter_type} {filter_value}".format(
                         filter_name="filter" + str(i),
                         filter_type=filter_type,
-                        filter_value='"{}" {}'.format(line, " ".join([str(v) for v in values[1:]]))).strip()
+                        filter_value='"{}" {}'.format(line, " ".join([str(v) for v in values[1:]])),
+                    ).strip()
                     i += 1
             else:
                 yield "{filter_name} {filter_type} {filter_value}".format(
                     filter_name="filter" + str(i),
                     filter_type=filter_type,
-                    filter_value=" ".join([str(v) for v in values]))
+                    filter_value=" ".join([str(v) for v in values]),
+                )
                 i += 1
 
     async def _add_ubridge_ethernet_connection(self, bridge_name, ethernet_interface, block_host_traffic=False):
@@ -814,51 +907,23 @@ class BaseNode:
 
         if sys.platform.startswith("linux") and block_host_traffic is False:
             # on Linux we use RAW sockets by default excepting if host traffic must be blocked
-            await self._ubridge_send('bridge add_nio_linux_raw {name} "{interface}"'.format(name=bridge_name, interface=ethernet_interface))
-        elif sys.platform.startswith("win"):
-            npf_id, source_mac = self._find_windows_interface(ethernet_interface)
-
-            if npf_id:
-                await self._ubridge_send('bridge add_nio_ethernet {name} "{interface}"'.format(name=bridge_name,
-                                                                                                    interface=npf_id))
-            else:
-                raise NodeError("Could not find NPF id for interface {}".format(ethernet_interface))
-
-            if block_host_traffic:
-                if source_mac:
-                    await self._ubridge_send('bridge set_pcap_filter {name} "not ether src {mac}"'.format(name=bridge_name, mac=source_mac))
-                    log.info('PCAP filter applied on "{interface}" for source MAC {mac}'.format(interface=ethernet_interface, mac=source_mac))
-                else:
-                    log.warning("Could not block host network traffic on {} (no MAC address found)".format(ethernet_interface))
+            await self._ubridge_send(
+                'bridge add_nio_linux_raw {name} "{interface}"'.format(name=bridge_name, interface=ethernet_interface)
+            )
         else:
             # on other platforms we just rely on the pcap library
-            await self._ubridge_send('bridge add_nio_ethernet {name} "{interface}"'.format(name=bridge_name, interface=ethernet_interface))
+            await self._ubridge_send(
+                'bridge add_nio_ethernet {name} "{interface}"'.format(name=bridge_name, interface=ethernet_interface)
+            )
             source_mac = None
             for interface in interfaces():
                 if interface["name"] == ethernet_interface:
                     source_mac = interface["mac_address"]
             if source_mac:
-                await self._ubridge_send('bridge set_pcap_filter {name} "not ether src {mac}"'.format(name=bridge_name, mac=source_mac))
-                log.info('PCAP filter applied on "{interface}" for source MAC {mac}'.format(interface=ethernet_interface, mac=source_mac))
-
-    @staticmethod
-    def _find_windows_interface(ethernet_interface):
-        """
-        Get NPF ID and MAC address by input ethernet interface name.
-        Return None, None when not match any interface
-
-        :returns: NPF ID and MAC address
-        """
-        # on Windows we use Winpcap/Npcap
-        windows_interfaces = interfaces()
-        for interface in windows_interfaces:
-            if str.strip(ethernet_interface) == str.strip(interface["name"]):
-                return interface["id"], interface["mac_address"]
-
-        for interface in windows_interfaces:
-            if "netcard" in interface and ethernet_interface in interface["netcard"]:
-                return interface["id"], interface["mac_address"]
-        return None, None
+                await self._ubridge_send(
+                    'bridge set_pcap_filter {name} "not ether src {mac}"'.format(name=bridge_name, mac=source_mac)
+                )
+                log.info(f"PCAP filter applied on '{ethernet_interface}' for source MAC {source_mac}")
 
     def _create_local_udp_tunnel(self):
         """
@@ -870,15 +935,15 @@ class BaseNode:
         m = PortManager.instance()
         lport = m.get_free_udp_port(self.project)
         rport = m.get_free_udp_port(self.project)
-        source_nio_settings = {'lport': lport, 'rhost': '127.0.0.1', 'rport': rport, 'type': 'nio_udp'}
-        destination_nio_settings = {'lport': rport, 'rhost': '127.0.0.1', 'rport': lport, 'type': 'nio_udp'}
+        source_nio_settings = {"lport": lport, "rhost": "127.0.0.1", "rport": rport, "type": "nio_udp"}
+        destination_nio_settings = {"lport": rport, "rhost": "127.0.0.1", "rport": lport, "type": "nio_udp"}
         source_nio = self.manager.create_nio(source_nio_settings)
         destination_nio = self.manager.create_nio(destination_nio_settings)
-        log.info("{module}: '{name}' [{id}]:local UDP tunnel created between port {port1} and {port2}".format(module=self.manager.module_name,
-                                                                                                              name=self.name,
-                                                                                                              id=self.id,
-                                                                                                              port1=lport,
-                                                                                                              port2=rport))
+        log.info(
+            "{module}: '{name}' [{id}]:local UDP tunnel created between port {port1} and {port2}".format(
+                module=self.manager.module_name, name=self.name, id=self.id, port1=lport, port2=rport
+            )
+        )
         return source_nio, destination_nio
 
     @property
@@ -901,11 +966,9 @@ class BaseNode:
         available_ram = int(psutil.virtual_memory().available / (1024 * 1024))
         percentage_left = 100 - psutil.virtual_memory().percent
         if requested_ram > available_ram:
-            message = '"{}" requires {}MB of RAM to run but there is only {}MB - {}% of RAM left on "{}"'.format(self.name,
-                                                                                                                 requested_ram,
-                                                                                                                 available_ram,
-                                                                                                                 percentage_left,
-                                                                                                                 platform.node())
+            message = '"{}" requires {}MB of RAM to run but there is only {}MB - {}% of RAM left on "{}"'.format(
+                self.name, requested_ram, available_ram, percentage_left, platform.node()
+            )
             self.project.emit("log.warning", {"message": message})
 
     def _get_custom_adapter_settings(self, adapter_number):

@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 #
 # Copyright (C) 2013 GNS3 Technologies Inc.
 #
@@ -49,7 +48,9 @@ class NIOTAP(NIO):
 
         return "NIO TAP"
 
-    def __json__(self):
+    def asdict(self):
 
-        return {"type": "nio_tap",
-                "tap_device": self._tap_device}
+        return {
+            "type": "nio_tap",
+            "tap_device": self._tap_device
+        }

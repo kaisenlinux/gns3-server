@@ -17,11 +17,12 @@
 
 import json
 import pytest
-import aiohttp
 from unittest.mock import patch, MagicMock
 
 from gns3server.controller.project import Project
-from gns3server.controller.compute import Compute, ComputeConflict
+from gns3server.controller.compute import Compute
+from gns3server.controller.controller_error import ControllerError, ControllerNotFoundError, ComputeConflictError
+from pydantic import SecretStr
 from tests.utils import asyncio_patch, AsyncioMagicMock
 
 
@@ -41,17 +42,17 @@ def test_init(compute):
 def test_getUrl(controller):
 
     compute = Compute("my_compute_id", protocol="https", host="localhost", port=84, controller=controller)
-    assert compute._getUrl("/test") == "https://localhost:84/v2/compute/test"
+    assert compute._getUrl("/test") == "https://localhost:84/v3/compute/test"
     # IPV6 localhost
     compute = Compute("my_compute_id", protocol="https", host="::1", port=84, controller=controller)
-    assert compute._getUrl("/test") == "https://[::1]:84/v2/compute/test"
+    assert compute._getUrl("/test") == "https://[::1]:84/v3/compute/test"
 
     # Listen on all interfaces aka 0.0.0.0 require us to connect via 127.0.0.1
     compute = Compute("my_compute_id", protocol="https", host="0.0.0.0", port=84, controller=controller)
-    assert compute._getUrl("/test") == "https://127.0.0.1:84/v2/compute/test"
+    assert compute._getUrl("/test") == "https://127.0.0.1:84/v3/compute/test"
     # IPV6
     compute = Compute("my_compute_id", protocol="https", host="::", port=84, controller=controller)
-    assert compute._getUrl("/test") == "https://[::1]:84/v2/compute/test"
+    assert compute._getUrl("/test") == "https://[::1]:84/v3/compute/test"
 
 
 def test_get_url(controller):
@@ -78,6 +79,7 @@ def test_name():
     assert c.name == "https://azertyuiopq...@example.com:84"
 
 
+@pytest.mark.asyncio
 async def test_compute_httpQuery(compute):
 
     response = MagicMock()
@@ -85,10 +87,11 @@ async def test_compute_httpQuery(compute):
         response.status = 200
         await compute.post("/projects", {"a": "b"})
         await compute.close()
-        mock.assert_called_with("POST", "https://example.com:84/v2/compute/projects", data=b'{"a": "b"}', headers={'content-type': 'application/json'}, auth=None, chunked=None, timeout=20)
+        mock.assert_called_with("POST", "https://example.com:84/v3/compute/projects", data=b'{"a": "b"}', headers={'content-type': 'application/json'}, auth=None, chunked=None, timeout=120)
         assert compute._auth is None
 
 
+@pytest.mark.asyncio
 async def test_compute_httpQueryAuth(compute):
 
     response = MagicMock()
@@ -96,15 +99,16 @@ async def test_compute_httpQueryAuth(compute):
         response.status = 200
 
         compute.user = "root"
-        compute.password = "toor"
+        compute.password = SecretStr("toor")
         await compute.post("/projects", {"a": "b"})
         await compute.close()
-        mock.assert_called_with("POST", "https://example.com:84/v2/compute/projects", data=b'{"a": "b"}', headers={'content-type': 'application/json'}, auth=compute._auth, chunked=None, timeout=20)
+        mock.assert_called_with("POST", "https://example.com:84/v3/compute/projects", data=b'{"a": "b"}', headers={'content-type': 'application/json'}, auth=compute._auth, chunked=None, timeout=120)
         assert compute._auth.login == "root"
         assert compute._auth.password == "toor"
 
 
-# async def test_compute_httpQueryNotConnected(compute, controller):
+# @pytest.mark.asyncio
+#async def test_compute_httpQueryNotConnected(compute, controller):
 #
 #     controller._notification = MagicMock()
 #     compute._connected = False
@@ -117,11 +121,12 @@ async def test_compute_httpQueryAuth(compute):
 #         mock.assert_any_call("POST", "https://example.com:84/v2/compute/projects", data=b'{"a": "b"}', headers={'content-type': 'application/json'}, auth=None, chunked=None, timeout=20)
 #     #assert compute._connected
 #     assert compute._capabilities["version"] == __version__
-#     controller.notification.controller_emit.assert_called_with("compute.updated", compute.__json__())
+#     controller.notification.controller_emit.assert_called_with("compute.updated", compute.asdict())
 #     await compute.close()
 
 
-# async def test_compute_httpQueryNotConnectedGNS3vmNotRunning(compute, controller):
+# @pytest.mark.asyncio
+#async def test_compute_httpQueryNotConnectedGNS3vmNotRunning(compute, controller):
 #     """
 #     We are not connected to the remote and it's a GNS3 VM. So we need to start it
 #     """
@@ -143,10 +148,11 @@ async def test_compute_httpQueryAuth(compute):
 #     assert controller.gns3vm.start.called
 #     #assert compute._connected
 #     assert compute._capabilities["version"] == __version__
-#     controller.notification.controller_emit.assert_called_with("compute.updated", compute.__json__())
+#     controller.notification.controller_emit.assert_called_with("compute.updated", compute.asdict())
 #     await compute.close()
 
 
+@pytest.mark.asyncio
 async def test_compute_httpQueryNotConnectedInvalidVersion(compute):
 
     compute._connected = False
@@ -154,12 +160,13 @@ async def test_compute_httpQueryNotConnectedInvalidVersion(compute):
     response.read = AsyncioMagicMock(return_value=json.dumps({"version": "1.42.4"}).encode())
     response.status = 200
     with asyncio_patch("aiohttp.ClientSession.request", return_value=response) as mock:
-        with pytest.raises(aiohttp.web.HTTPConflict):
+        with pytest.raises(ControllerError):
             await compute.post("/projects", {"a": "b"})
-        mock.assert_any_call("GET", "https://example.com:84/v2/compute/capabilities", headers={'content-type': 'application/json'}, data=None, auth=None, chunked=None, timeout=20)
+        mock.assert_any_call("GET", "https://example.com:84/v3/compute/capabilities", headers={'content-type': 'application/json'}, data=None, auth=None, chunked=None, timeout=120)
         await compute.close()
 
 
+@pytest.mark.asyncio
 async def test_compute_httpQueryNotConnectedNonGNS3Server(compute):
 
     compute._connected = False
@@ -167,12 +174,13 @@ async def test_compute_httpQueryNotConnectedNonGNS3Server(compute):
     response.read = AsyncioMagicMock(return_value=b'Blocked by super antivirus')
     response.status = 200
     with asyncio_patch("aiohttp.ClientSession.request", return_value=response) as mock:
-        with pytest.raises(aiohttp.web.HTTPConflict):
+        with pytest.raises(ControllerError):
             await compute.post("/projects", {"a": "b"})
-        mock.assert_any_call("GET", "https://example.com:84/v2/compute/capabilities", headers={'content-type': 'application/json'}, data=None, auth=None, chunked=None, timeout=20)
+        mock.assert_any_call("GET", "https://example.com:84/v3/compute/capabilities", headers={'content-type': 'application/json'}, data=None, auth=None, chunked=None, timeout=120)
         await compute.close()
 
 
+@pytest.mark.asyncio
 async def test_compute_httpQueryNotConnectedNonGNS3Server2(compute):
 
     compute._connected = False
@@ -180,34 +188,37 @@ async def test_compute_httpQueryNotConnectedNonGNS3Server2(compute):
     response.read = AsyncioMagicMock(return_value=b'{}')
     response.status = 200
     with asyncio_patch("aiohttp.ClientSession.request", return_value=response) as mock:
-        with pytest.raises(aiohttp.web.HTTPConflict):
+        with pytest.raises(ControllerError):
             await compute.post("/projects", {"a": "b"})
-        mock.assert_any_call("GET", "https://example.com:84/v2/compute/capabilities", headers={'content-type': 'application/json'}, data=None, auth=None, chunked=None, timeout=20)
+        mock.assert_any_call("GET", "https://example.com:84/v3/compute/capabilities", headers={'content-type': 'application/json'}, data=None, auth=None, chunked=None, timeout=120)
 
 
+@pytest.mark.asyncio
 async def test_compute_httpQueryError(compute):
 
     response = MagicMock()
     with asyncio_patch("aiohttp.ClientSession.request", return_value=response) as mock:
         response.status = 404
-        with pytest.raises(aiohttp.web.HTTPNotFound):
+        with pytest.raises(ControllerNotFoundError):
             await compute.post("/projects", {"a": "b"})
         assert mock.called
         await compute.close()
 
 
+@pytest.mark.asyncio
 async def test_compute_httpQueryConflictError(compute):
 
     response = MagicMock()
     with asyncio_patch("aiohttp.ClientSession.request", return_value=response) as mock:
         response.status = 409
         response.read = AsyncioMagicMock(return_value=b'{"message": "Test"}')
-        with pytest.raises(ComputeConflict):
+        with pytest.raises(ComputeConflictError):
             await compute.post("/projects", {"a": "b"})
         assert mock.called
         await compute.close()
 
 
+@pytest.mark.asyncio
 async def test_compute_httpQuery_project(compute):
 
     response = MagicMock()
@@ -217,16 +228,18 @@ async def test_compute_httpQuery_project(compute):
             project = Project(name="Test")
             mock_notification.assert_called()
         await compute.post("/projects", project)
-        mock.assert_called_with("POST", "https://example.com:84/v2/compute/projects", data=json.dumps(project.__json__()), headers={'content-type': 'application/json'}, auth=None, chunked=None, timeout=20)
+        mock.assert_called_with("POST", "https://example.com:84/v3/compute/projects", data=json.dumps(project.asdict()), headers={'content-type': 'application/json'}, auth=None, chunked=None, timeout=120)
         await compute.close()
 
 # FIXME: https://github.com/aio-libs/aiohttp/issues/2525
-# async def test_connectNotification(compute):
+# @pytest.mark.asyncio
+#async def test_connectNotification(compute):
 #
 #     ws_mock = AsyncioMagicMock()
 #     call = 0
 #
-#     async def receive():
+#     @pytest.mark.asyncio
+#async def receive():
 #         nonlocal call
 #         call += 1
 #         if call == 1:
@@ -258,7 +271,8 @@ async def test_compute_httpQuery_project(compute):
 #
 #     call = 0
 #
-#     async def receive():
+#     @pytest.mark.asyncio
+#async def receive():
 #         nonlocal call
 #         call += 1
 #         if call == 1:
@@ -282,26 +296,32 @@ async def test_compute_httpQuery_project(compute):
 #     assert args[1]["memory_usage_percent"] == 80.7
 #     assert args[1]["cpu_usage_percent"] == 35.7
 
+@pytest.mark.asyncio
 async def test_json(compute):
 
     compute.user = "test"
-    assert compute.__json__() == {
+    assert compute.asdict() == {
         "compute_id": "my_compute_id",
         "name": compute.name,
         "protocol": "https",
         "host": "example.com",
         "port": 84,
         "user": "test",
-        "cpu_usage_percent": None,
-        "memory_usage_percent": None,
+        "cpu_usage_percent": 0,
+        "memory_usage_percent": 0,
+        "disk_usage_percent": 0,
         "connected": True,
         "last_error": None,
         "capabilities": {
-            "version": None,
+            "version": "",
+            "platform": "",
+            "cpus": 0,
+            "memory": 0,
+            "disk_size": 0,
             "node_types": []
         }
     }
-    assert compute.__json__(topology_dump=True) == {
+    assert compute.asdict(topology_dump=True) == {
         "compute_id": "my_compute_id",
         "name": compute.name,
         "protocol": "https",
@@ -310,16 +330,18 @@ async def test_json(compute):
     }
 
 
+@pytest.mark.asyncio
 async def test_downloadFile(project, compute):
 
     response = MagicMock()
     response.status = 200
     with asyncio_patch("aiohttp.ClientSession.request", return_value=response) as mock:
         await compute.download_file(project, "test/titi")
-    mock.assert_called_with("GET", "https://example.com:84/v2/compute/projects/{}/files/test/titi".format(project.id), auth=None)
+    mock.assert_called_with("GET", "https://example.com:84/v3/compute/projects/{}/files/test/titi".format(project.id), auth=None)
     await compute.close()
 
 
+@pytest.mark.asyncio
 async def test_close(compute):
 
     assert compute.connected is True
@@ -327,6 +349,7 @@ async def test_close(compute):
     assert compute.connected is False
 
 
+@pytest.mark.asyncio
 async def test_update(compute, controller):
 
     compute._controller._notification = MagicMock()
@@ -337,64 +360,46 @@ async def test_update(compute, controller):
     await compute.update(name="Test 2")
     assert compute.name == "Test 2"
     assert compute.host == "example.org"
-    controller.notification.controller_emit.assert_called_with("compute.updated", compute.__json__())
+    controller.notification.controller_emit.assert_called_with("compute.updated", compute.asdict())
     assert compute.connected is False
     assert compute._controller.save.called
 
 
+@pytest.mark.asyncio
 async def test_forward_get(compute):
 
     response = MagicMock()
     response.status = 200
     with asyncio_patch("aiohttp.ClientSession.request", return_value=response) as mock:
         await compute.forward("GET", "qemu", "images")
-        mock.assert_called_with("GET", "https://example.com:84/v2/compute/qemu/images", auth=None, data=None, headers={'content-type': 'application/json'}, chunked=None, timeout=None)
+        mock.assert_called_with("GET", "https://example.com:84/v3/compute/qemu/images", auth=None, data=None, headers={'content-type': 'application/json'}, chunked=None, timeout=None)
         await compute.close()
 
 
+@pytest.mark.asyncio
 async def test_forward_404(compute):
 
     response = MagicMock()
     response.status = 404
     with asyncio_patch("aiohttp.ClientSession.request", return_value=response) as mock:
-        with pytest.raises(aiohttp.web_exceptions.HTTPNotFound):
+        with pytest.raises(ControllerNotFoundError):
             await compute.forward("GET", "qemu", "images")
         assert mock.called
         await compute.close()
 
 
+@pytest.mark.asyncio
 async def test_forward_post(compute):
 
     response = MagicMock()
     response.status = 200
     with asyncio_patch("aiohttp.ClientSession.request", return_value=response) as mock:
         await compute.forward("POST", "qemu", "img", data={"id": 42})
-        mock.assert_called_with("POST", "https://example.com:84/v2/compute/qemu/img", auth=None, data=b'{"id": 42}', headers={'content-type': 'application/json'}, chunked=None, timeout=None)
+        mock.assert_called_with("POST", "https://example.com:84/v3/compute/qemu/img", auth=None, data=b'{"id": 42}', headers={'content-type': 'application/json'}, chunked=None, timeout=None)
         await compute.close()
 
 
-async def test_images(compute):
-    """
-    Will return image on compute
-    """
-
-    response = MagicMock()
-    response.status = 200
-    response.read = AsyncioMagicMock(return_value=json.dumps([{
-        "filename": "linux.qcow2",
-        "path": "linux.qcow2",
-        "md5sum": "d41d8cd98f00b204e9800998ecf8427e",
-        "filesize": 0}]).encode())
-    with asyncio_patch("aiohttp.ClientSession.request", return_value=response) as mock:
-        images = await compute.images("qemu")
-        mock.assert_called_with("GET", "https://example.com:84/v2/compute/qemu/images", auth=None, data=None, headers={'content-type': 'application/json'}, chunked=None, timeout=None)
-        await compute.close()
-
-    assert images == [
-        {"filename": "linux.qcow2", "path": "linux.qcow2", "md5sum": "d41d8cd98f00b204e9800998ecf8427e", "filesize": 0}
-    ]
-
-
+@pytest.mark.asyncio
 async def test_list_files(project, compute):
 
     res = [{"path": "test"}]
@@ -403,10 +408,11 @@ async def test_list_files(project, compute):
     response.status = 200
     with asyncio_patch("aiohttp.ClientSession.request", return_value=response) as mock:
         assert await compute.list_files(project) == res
-        mock.assert_any_call("GET", "https://example.com:84/v2/compute/projects/{}/files".format(project.id), auth=None, chunked=None, data=None, headers={'content-type': 'application/json'}, timeout=None)
+        mock.assert_any_call("GET", "https://example.com:84/v3/compute/projects/{}/files".format(project.id), auth=None, chunked=None, data=None, headers={'content-type': 'application/json'}, timeout=None)
         await compute.close()
 
 
+@pytest.mark.asyncio
 async def test_interfaces(compute):
 
     res = [
@@ -424,10 +430,11 @@ async def test_interfaces(compute):
     response.status = 200
     with asyncio_patch("aiohttp.ClientSession.request", return_value=response) as mock:
         assert await compute.interfaces() == res
-        mock.assert_any_call("GET", "https://example.com:84/v2/compute/network/interfaces", auth=None, chunked=None, data=None, headers={'content-type': 'application/json'}, timeout=20)
+        mock.assert_any_call("GET", "https://example.com:84/v3/compute/network/interfaces", auth=None, chunked=None, data=None, headers={'content-type': 'application/json'}, timeout=120)
         await compute.close()
 
 
+@pytest.mark.asyncio
 async def test_get_ip_on_same_subnet(controller):
 
     compute1 = Compute("compute1", host="192.168.1.1", controller=controller)

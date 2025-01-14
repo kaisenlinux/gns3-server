@@ -16,14 +16,11 @@
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 
-import aiohttp
-
-
+from .controller_error import ControllerError, ControllerNotFoundError
 from .link import Link
 
 
 class UDPLink(Link):
-
     def __init__(self, project, link_id=None):
         super().__init__(project, link_id=link_id)
         self._created = False
@@ -52,12 +49,12 @@ class UDPLink(Link):
         try:
             (node1_host, node2_host) = await node1.compute.get_ip_on_same_subnet(node2.compute)
         except ValueError as e:
-            raise aiohttp.web.HTTPConflict(text="Cannot get an IP address on same subnet: {}".format(e))
+            raise ControllerError(f"Cannot get an IP address on same subnet: {e}")
 
         # Reserve a UDP port on both side
-        response = await node1.compute.post("/projects/{}/ports/udp".format(self._project.id))
+        response = await node1.compute.post(f"/projects/{self._project.id}/ports/udp")
         self._node1_port = response.json["udp_port"]
-        response = await node2.compute.post("/projects/{}/ports/udp".format(self._project.id))
+        response = await node2.compute.post(f"/projects/{self._project.id}/ports/udp")
         self._node2_port = response.json["udp_port"]
 
         node1_filters = {}
@@ -69,29 +66,35 @@ class UDPLink(Link):
             node2_filters = self.get_active_filters()
 
         # Create the tunnel on both side
-        self._link_data.append({
-            "lport": self._node1_port,
-            "rhost": node2_host,
-            "rport": self._node2_port,
-            "type": "nio_udp",
-            "filters": node1_filters,
-            "suspend": self._suspended
-        })
-        await node1.post("/adapters/{adapter_number}/ports/{port_number}/nio".format(adapter_number=adapter_number1, port_number=port_number1), data=self._link_data[0], timeout=120)
+        self._link_data.append(
+            {
+                "lport": self._node1_port,
+                "rhost": node2_host,
+                "rport": self._node2_port,
+                "type": "nio_udp",
+                "filters": node1_filters,
+                "suspend": self._suspended,
+            }
+        )
+        await node1.post(f"/adapters/{adapter_number1}/ports/{port_number1}/nio", data=self._link_data[0], timeout=120)
 
-        self._link_data.append({
-            "lport": self._node2_port,
-            "rhost": node1_host,
-            "rport": self._node1_port,
-            "type": "nio_udp",
-            "filters": node2_filters,
-            "suspend": self._suspended
-        })
+        self._link_data.append(
+            {
+                "lport": self._node2_port,
+                "rhost": node1_host,
+                "rport": self._node1_port,
+                "type": "nio_udp",
+                "filters": node2_filters,
+                "suspend": self._suspended,
+            }
+        )
         try:
-            await node2.post("/adapters/{adapter_number}/ports/{port_number}/nio".format(adapter_number=adapter_number2, port_number=port_number2), data=self._link_data[1], timeout=120)
+            await node2.post(
+                f"/adapters/{adapter_number2}/ports/{port_number2}/nio", data=self._link_data[1], timeout=120
+            )
         except Exception as e:
             # We clean the first NIO
-            await node1.delete("/adapters/{adapter_number}/ports/{port_number}/nio".format(adapter_number=adapter_number1, port_number=port_number1), timeout=120)
+            await node1.delete(f"/adapters/{adapter_number1}/ports/{port_number1}/nio", timeout=120)
             raise e
         self._created = True
 
@@ -118,14 +121,18 @@ class UDPLink(Link):
         self._link_data[0]["filters"] = node1_filters
         self._link_data[0]["suspend"] = self._suspended
         if node1.node_type not in ("ethernet_switch", "ethernet_hub"):
-            await node1.put("/adapters/{adapter_number}/ports/{port_number}/nio".format(adapter_number=adapter_number1, port_number=port_number1), data=self._link_data[0], timeout=120)
+            await node1.put(
+                f"/adapters/{adapter_number1}/ports/{port_number1}/nio", data=self._link_data[0], timeout=120
+            )
 
         adapter_number2 = self._nodes[1]["adapter_number"]
         port_number2 = self._nodes[1]["port_number"]
         self._link_data[1]["filters"] = node2_filters
         self._link_data[1]["suspend"] = self._suspended
         if node2.node_type not in ("ethernet_switch", "ethernet_hub"):
-            await node2.put("/adapters/{adapter_number}/ports/{port_number}/nio".format(adapter_number=adapter_number2, port_number=port_number2), data=self._link_data[1], timeout=221)
+            await node2.put(
+                f"/adapters/{adapter_number2}/ports/{port_number2}/nio", data=self._link_data[1], timeout=221
+            )
 
     async def delete(self):
         """
@@ -140,9 +147,9 @@ class UDPLink(Link):
         except IndexError:
             return
         try:
-            await node1.delete("/adapters/{adapter_number}/ports/{port_number}/nio".format(adapter_number=adapter_number1, port_number=port_number1), timeout=120)
-        # If the node is already delete (user selected multiple element and delete all in the same time)
-        except aiohttp.web.HTTPNotFound:
+            await node1.delete(f"/adapters/{adapter_number1}/ports/{port_number1}/nio", timeout=120)
+        # If the node is already deleted (user selected multiple element and delete all in the same time)
+        except ControllerNotFoundError:
             pass
 
         try:
@@ -152,11 +159,20 @@ class UDPLink(Link):
         except IndexError:
             return
         try:
-            await node2.delete("/adapters/{adapter_number}/ports/{port_number}/nio".format(adapter_number=adapter_number2, port_number=port_number2), timeout=120)
-        # If the node is already delete (user selected multiple element and delete all in the same time)
-        except aiohttp.web.HTTPNotFound:
+            await node2.delete(f"/adapters/{adapter_number2}/ports/{port_number2}/nio", timeout=120)
+        # If the node is already deleted (user selected multiple element and delete all in the same time)
+        except ControllerNotFoundError:
             pass
         await super().delete()
+
+    async def reset(self):
+        """
+        Reset the link.
+        """
+
+        # recreate the link on the compute
+        await self.delete()
+        await self.create()
 
     async def start_capture(self, data_link_type="DLT_EN10MB", capture_file_name=None):
         """
@@ -165,9 +181,13 @@ class UDPLink(Link):
         if not capture_file_name:
             capture_file_name = self.default_capture_file_name()
         self._capture_node = self._choose_capture_side()
-        data = {"capture_file_name": capture_file_name,
-                "data_link_type": data_link_type}
-        await self._capture_node["node"].post("/adapters/{adapter_number}/ports/{port_number}/start_capture".format(adapter_number=self._capture_node["adapter_number"], port_number=self._capture_node["port_number"]), data=data)
+        data = {"capture_file_name": capture_file_name, "data_link_type": data_link_type}
+        await self._capture_node["node"].post(
+            "/adapters/{adapter_number}/ports/{port_number}/capture/start".format(
+                adapter_number=self._capture_node["adapter_number"], port_number=self._capture_node["port_number"]
+            ),
+            data=data,
+        )
         await super().start_capture(data_link_type=data_link_type, capture_file_name=capture_file_name)
 
     async def stop_capture(self):
@@ -175,7 +195,11 @@ class UDPLink(Link):
         Stop capture on a link
         """
         if self._capture_node:
-            await self._capture_node["node"].post("/adapters/{adapter_number}/ports/{port_number}/stop_capture".format(adapter_number=self._capture_node["adapter_number"], port_number=self._capture_node["port_number"]))
+            await self._capture_node["node"].post(
+                "/adapters/{adapter_number}/ports/{port_number}/capture/stop".format(
+                    adapter_number=self._capture_node["adapter_number"], port_number=self._capture_node["port_number"]
+                )
+            )
             self._capture_node = None
         await super().stop_capture()
 
@@ -189,10 +213,14 @@ class UDPLink(Link):
         :returns: Node where the capture should run
         """
 
-        ALWAYS_RUNNING_NODES_TYPE = ("cloud", "nat", "ethernet_switch", "ethernet_hub")
+        ALWAYS_RUNNING_NODES_TYPE = ("cloud", "nat", "ethernet_switch", "ethernet_hub", "frame_relay_switch", "atm_switch")
 
         for node in self._nodes:
-            if node["node"].compute.id == "local" and node["node"].node_type in ALWAYS_RUNNING_NODES_TYPE and node["node"].status == "started":
+            if (
+                node["node"].compute.id == "local"
+                and node["node"].node_type in ALWAYS_RUNNING_NODES_TYPE
+                and node["node"].status == "started"
+            ):
                 return node
 
         for node in self._nodes:
@@ -207,7 +235,7 @@ class UDPLink(Link):
             if node["node"].node_type and node["node"].status == "started":
                 return node
 
-        raise aiohttp.web.HTTPConflict(text="Cannot capture because there is no running device on this link")
+        raise ControllerError("Cannot capture because there is no running device on this link")
 
     async def node_updated(self, node):
         """

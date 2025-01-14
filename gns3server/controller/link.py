@@ -19,9 +19,11 @@ import os
 import re
 import uuid
 import html
-import aiohttp
+
+from .controller_error import ControllerError, ControllerNotFoundError
 
 import logging
+
 log = logging.getLogger(__name__)
 
 
@@ -30,76 +32,35 @@ FILTERS = [
         "type": "frequency_drop",
         "name": "Frequency drop",
         "description": "It will drop everything with a -1 frequency, drop every Nth packet with a positive frequency, or drop nothing",
-        "parameters": [
-            {
-                "name": "Frequency",
-                "minimum": -1,
-                "maximum": 32767,
-                "type": "int",
-                "unit": "th packet"
-            }
-        ]
+        "parameters": [{"name": "Frequency", "minimum": -1, "maximum": 32767, "type": "int", "unit": "th packet"}],
     },
     {
         "type": "packet_loss",
         "name": "Packet loss",
         "description": "The percentage represents the chance for a packet to be lost",
-        "parameters": [
-            {
-                "name": "Chance",
-                "minimum": 0,
-                "maximum": 100,
-                "type": "int",
-                "unit": "%"
-            }
-        ]
+        "parameters": [{"name": "Chance", "minimum": 0, "maximum": 100, "type": "int", "unit": "%"}],
     },
     {
         "type": "delay",
         "name": "Delay",
         "description": "Delay packets in milliseconds. You can add jitter in milliseconds (+/-) of the delay",
         "parameters": [
-            {
-                "name": "Latency",
-                "minimum": 0,
-                "maximum": 32767,
-                "unit": "ms",
-                "type": "int"
-            },
-            {
-                "name": "Jitter (-/+)",
-                "minimum": 0,
-                "maximum": 32767,
-                "unit": "ms",
-                "type": "int"
-            }
-        ]
+            {"name": "Latency", "minimum": 0, "maximum": 32767, "unit": "ms", "type": "int"},
+            {"name": "Jitter (-/+)", "minimum": 0, "maximum": 32767, "unit": "ms", "type": "int"},
+        ],
     },
     {
         "type": "corrupt",
         "name": "Corrupt",
         "description": "The percentage represents the chance for a packet to be corrupted",
-        "parameters": [
-            {
-                "name": "Chance",
-                "minimum": 0,
-                "maximum": 100,
-                "unit": "%",
-                "type": "int"
-            }
-        ]
+        "parameters": [{"name": "Chance", "minimum": 0, "maximum": 100, "unit": "%", "type": "int"}],
     },
     {
         "type": "bpf",
         "name": "Berkeley Packet Filter (BPF)",
         "description": "This filter will drop any packet matching a BPF expression. Put one expression per line",
-        "parameters": [
-            {
-                "name": "Filters",
-                "type": "text"
-            }
-        ]
-    }
+        "parameters": [{"name": "Filters", "type": "text"}],
+    },
 ]
 
 
@@ -193,27 +154,27 @@ class Link:
                 else:
                     new_values.append(int(value))
             values = new_values
-            if len(values) != 0 and values[0] != 0 and values[0] != '':
+            if len(values) != 0 and values[0] != 0 and values[0] != "":
                 new_filters[filter] = values
 
         if new_filters != self.filters:
             self._filters = new_filters
             if self._created:
                 await self.update()
-                self._project.emit_notification("link.updated", self.__json__())
+                self._project.emit_notification("link.updated", self.asdict())
                 self._project.dump()
 
     async def update_suspend(self, value):
         if value != self._suspended:
             self._suspended = value
             await self.update()
-            self._project.emit_notification("link.updated", self.__json__())
+            self._project.emit_notification("link.updated", self.asdict())
             self._project.dump()
 
     async def update_link_style(self, link_style):
         if link_style != self._link_style:
             self._link_style = link_style
-            self._project.emit_notification("link.updated", self.__json__())
+            self._project.emit_notification("link.updated", self.asdict())
             self._project.dump()
 
     @property
@@ -232,40 +193,44 @@ class Link:
 
         port = node.get_port(adapter_number, port_number)
         if port is None:
-            raise aiohttp.web.HTTPNotFound(text="Port {}/{} for {} not found".format(adapter_number, port_number, node.name))
+            raise ControllerNotFoundError(f"Port {adapter_number}/{port_number} for {node.name} not found")
         if port.link is not None:
-            raise aiohttp.web.HTTPConflict(text="Port is already used")
+            raise ControllerError("Port is already used")
 
         self._link_type = port.link_type
 
         for other_node in self._nodes:
             if other_node["node"] == node:
-                raise aiohttp.web.HTTPConflict(text="Cannot connect to itself")
+                raise ControllerError("Cannot connect to itself")
 
             if node.node_type in ["nat", "cloud"]:
                 if other_node["node"].node_type in ["nat", "cloud"]:
-                    raise aiohttp.web.HTTPConflict(text="Connecting a {} to a {} is not allowed".format(other_node["node"].node_type, node.node_type))
+                    raise ControllerError(
+                        "Connecting a {} to a {} is not allowed".format(other_node["node"].node_type, node.node_type)
+                    )
 
             # Check if user is not connecting serial => ethernet
             other_port = other_node["node"].get_port(other_node["adapter_number"], other_node["port_number"])
             if other_port is None:
-                raise aiohttp.web.HTTPNotFound(text="Port {}/{} for {} not found".format(other_node["adapter_number"], other_node["port_number"], other_node["node"].name))
+                raise ControllerNotFoundError(
+                    "Port {}/{} for {} not found".format(
+                        other_node["adapter_number"], other_node["port_number"], other_node["node"].name
+                    )
+                )
             if port.link_type != other_port.link_type:
-                raise aiohttp.web.HTTPConflict(text="Connecting a {} interface to a {} interface is not allowed".format(other_port.link_type, port.link_type))
+                raise ControllerError(
+                    f"Connecting a {other_port.link_type} interface to a {port.link_type} interface is not allowed"
+                )
 
         if label is None:
             label = {
-                "text": html.escape("{}/{}".format(adapter_number, port_number)),
-                "style": "font-family: TypeWriter;font-size: 10.0;font-weight: bold;fill: #000000;fill-opacity: 1.0;"
+                "text": html.escape(f"{adapter_number}/{port_number}"),
+                "style": "font-family: TypeWriter;font-size: 10.0;font-weight: bold;fill: #000000;fill-opacity: 1.0;",
             }
 
-        self._nodes.append({
-            "node": node,
-            "adapter_number": adapter_number,
-            "port_number": port_number,
-            "port": port,
-            "label": label
-        })
+        self._nodes.append(
+            {"node": node, "adapter_number": adapter_number, "port_number": port_number, "port": port, "label": label}
+        )
 
         if len(self._nodes) == 2:
             await self.create()
@@ -273,7 +238,7 @@ class Link:
                 n["node"].add_link(self)
                 n["port"].link = self
             self._created = True
-            self._project.emit_notification("link.created", self.__json__())
+            self._project.emit_notification("link.created", self.asdict())
 
         if dump:
             self._project.dump()
@@ -286,7 +251,7 @@ class Link:
                     label = node_data.get("label")
                     if label:
                         port["label"] = label
-        self._project.emit_notification("link.updated", self.__json__())
+        self._project.emit_notification("link.updated", self.asdict())
         self._project.dump()
 
     async def create(self):
@@ -312,6 +277,13 @@ class Link:
                 n["port"].link = None
                 n["node"].remove_link(self)
 
+    async def reset(self):
+        """
+        Reset a link
+        """
+
+        raise NotImplementedError
+
     async def start_capture(self, data_link_type="DLT_EN10MB", capture_file_name=None):
         """
         Start capture on the link
@@ -321,7 +293,7 @@ class Link:
 
         self._capturing = True
         self._capture_file_name = capture_file_name
-        self._project.emit_notification("link.updated", self.__json__())
+        self._project.emit_notification("link.updated", self.asdict())
 
     async def stop_capture(self):
         """
@@ -329,7 +301,7 @@ class Link:
         """
 
         self._capturing = False
-        self._project.emit_notification("link.updated", self.__json__())
+        self._project.emit_notification("link.updated", self.asdict())
 
     def pcap_streaming_url(self):
         """
@@ -344,11 +316,16 @@ class Link:
         node_id = self.capture_node["node"].id
         adapter_number = self.capture_node["adapter_number"]
         port_number = self.capture_node["port_number"]
-        url = "/projects/{project_id}/{node_type}/nodes/{node_id}/adapters/{adapter_number}/ports/{port_number}/pcap".format(project_id=self.project.id,
-                                                                                                                             node_type=node_type,
-                                                                                                                             node_id=node_id,
-                                                                                                                             adapter_number=adapter_number,
-                                                                                                                             port_number=port_number)
+        url = (
+            "/projects/{project_id}/{node_type}/nodes/{node_id}/adapters/{adapter_number}/"
+            "ports/{port_number}/capture/stream".format(
+                project_id=self.project.id,
+                node_type=node_type,
+                node_id=node_id,
+                adapter_number=adapter_number,
+                port_number=port_number,
+            )
+        )
 
         return compute._getUrl(url)
 
@@ -363,12 +340,14 @@ class Link:
         :returns: File name for a capture on this link
         """
 
-        capture_file_name = "{}_{}-{}_to_{}_{}-{}".format(self._nodes[0]["node"].name,
-                                                          self._nodes[0]["adapter_number"],
-                                                          self._nodes[0]["port_number"],
-                                                          self._nodes[1]["node"].name,
-                                                          self._nodes[1]["adapter_number"],
-                                                          self._nodes[1]["port_number"])
+        capture_file_name = "{}_{}-{}_to_{}_{}-{}".format(
+            self._nodes[0]["node"].name,
+            self._nodes[0]["adapter_number"],
+            self._nodes[0]["port_number"],
+            self._nodes[1]["node"].name,
+            self._nodes[1]["adapter_number"],
+            self._nodes[1]["port_number"],
+        )
         return re.sub(r"[^0-9A-Za-z_-]", "", capture_file_name) + ".pcap"
 
     @property
@@ -377,7 +356,7 @@ class Link:
 
     @property
     def nodes(self):
-        return [node['node'] for node in self._nodes]
+        return [node["node"] for node in self._nodes]
 
     @property
     def capturing(self):
@@ -423,16 +402,17 @@ class Link:
         :returns: None if no node support filtering else the node
         """
         for node in self._nodes:
-            if node["node"].node_type in ('vpcs',
-                                          'traceng',
-                                          'vmware',
-                                          'dynamips',
-                                          'qemu',
-                                          'iou',
-                                          'cloud',
-                                          'nat',
-                                          'virtualbox',
-                                          'docker'):
+            if node["node"].node_type in (
+                "vpcs",
+                "vmware",
+                "dynamips",
+                "qemu",
+                "iou",
+                "cloud",
+                "nat",
+                "virtualbox",
+                "docker",
+            ):
                 return node["node"]
         return None
 
@@ -444,25 +424,27 @@ class Link:
     def __hash__(self):
         return hash(self._id)
 
-    def __json__(self, topology_dump=False):
+    def asdict(self, topology_dump=False):
         """
         :param topology_dump: Filter to keep only properties require for saving on disk
         """
         res = []
         for side in self._nodes:
-            res.append({
-                "node_id": side["node"].id,
-                "adapter_number": side["adapter_number"],
-                "port_number": side["port_number"],
-                "label": side["label"]
-            })
+            res.append(
+                {
+                    "node_id": side["node"].id,
+                    "adapter_number": side["adapter_number"],
+                    "port_number": side["port_number"],
+                    "label": side["label"],
+                }
+            )
         if topology_dump:
             return {
                 "nodes": res,
                 "link_id": self._id,
                 "filters": self._filters,
                 "link_style": self._link_style,
-                "suspend": self._suspended
+                "suspend": self._suspended,
             }
         return {
             "nodes": res,
@@ -474,6 +456,6 @@ class Link:
             "capture_compute_id": self.capture_compute_id,
             "link_type": self._link_type,
             "filters": self._filters,
+            "suspend": self._suspended,
             "link_style": self._link_style,
-            "suspend": self._suspended
         }

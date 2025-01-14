@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 #
 # Copyright (C) 2017 GNS3 Technologies Inc.
 #
@@ -15,9 +14,10 @@
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-import aiohttp
+from gns3server.controller.controller_error import ControllerError
 
 import logging
+
 log = logging.getLogger(__name__)
 
 
@@ -38,10 +38,12 @@ def get_next_application_id(projects, computes):
         if project.status == "opened":
             nodes.extend(list(project.nodes.values()))
 
-    used = set([n.properties["application_id"] for n in nodes if n.node_type == "iou" and n.compute.id in computes])
+    used = {n.properties["application_id"] for n in nodes if n.node_type == "iou" and n.compute.id in computes}
     pool = set(range(1, 512))
     try:
         application_id = (pool - used).pop()
         return application_id
     except KeyError:
-        raise aiohttp.web.HTTPConflict(text="Cannot create a new IOU node (limit of 512 nodes across all opened projects using the same computes)")
+        raise ControllerError(
+            "Cannot create a new IOU node (limit of 512 nodes across all opened projects using the same computes)"
+        )

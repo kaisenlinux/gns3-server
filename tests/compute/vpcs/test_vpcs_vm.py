@@ -16,9 +16,9 @@
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 import pytest
+import pytest_asyncio
 import asyncio
 import os
-import sys
 
 from tests.utils import asyncio_patch, AsyncioMagicMock
 from gns3server.utils import parse_version
@@ -30,16 +30,16 @@ from gns3server.compute.vpcs import VPCS
 from gns3server.compute.notification_manager import NotificationManager
 
 
-@pytest.fixture
-async def manager(loop, port_manager):
+@pytest_asyncio.fixture
+async def manager(port_manager):
 
     m = VPCS.instance()
     m.port_manager = port_manager
     return m
 
 
-@pytest.fixture(scope="function")
-async def vm(loop, compute_project, manager, tmpdir, ubridge_path):
+@pytest_asyncio.fixture(scope="function")
+async def vm(compute_project, manager, tmpdir, ubridge_path):
 
     vm = VPCSVM("test", "00010203-0405-0607-0809-0a0b0c0d0e0f", compute_project, manager)
     vm._vpcs_version = parse_version("0.9")
@@ -49,6 +49,7 @@ async def vm(loop, compute_project, manager, tmpdir, ubridge_path):
     return vm
 
 
+@pytest.mark.asyncio
 async def test_vm(compute_project, manager):
 
     vm = VPCSVM("test", "00010203-0405-0607-0809-0a0b0c0d0e0f", compute_project, manager)
@@ -56,6 +57,7 @@ async def test_vm(compute_project, manager):
     assert vm.id == "00010203-0405-0607-0809-0a0b0c0d0e0f"
 
 
+@pytest.mark.asyncio
 async def test_vm_check_vpcs_version(vm):
 
     with asyncio_patch("gns3server.compute.vpcs.vpcs_vm.subprocess_check_output", return_value="Welcome to Virtual PC Simulator, version 0.9"):
@@ -63,6 +65,7 @@ async def test_vm_check_vpcs_version(vm):
         assert vm._vpcs_version == parse_version("0.9")
 
 
+@pytest.mark.asyncio
 async def test_vm_check_vpcs_version_0_6_1(vm):
 
     with asyncio_patch("gns3server.compute.vpcs.vpcs_vm.subprocess_check_output", return_value="Welcome to Virtual PC Simulator, version 0.6.1"):
@@ -70,6 +73,7 @@ async def test_vm_check_vpcs_version_0_6_1(vm):
         assert vm._vpcs_version == parse_version("0.6.1")
 
 
+@pytest.mark.asyncio
 async def test_vm_invalid_vpcs_version(vm, manager):
 
     with asyncio_patch("gns3server.compute.vpcs.vpcs_vm.subprocess_check_output", return_value="Welcome to Virtual PC Simulator, version 0.1"):
@@ -81,6 +85,7 @@ async def test_vm_invalid_vpcs_version(vm, manager):
             assert vm.id == "00010203-0405-0607-0809-0a0b0c0d0e0f"
 
 
+@pytest.mark.asyncio
 async def test_vm_invalid_vpcs_path(vm, manager):
 
     with patch("gns3server.compute.vpcs.vpcs_vm.VPCSVM._vpcs_path", return_value="/tmp/fake/path/vpcs"):
@@ -92,6 +97,7 @@ async def test_vm_invalid_vpcs_path(vm, manager):
             assert vm.id == "00010203-0405-0607-0809-0a0b0c0d0e0e"
 
 
+@pytest.mark.asyncio
 async def test_start(vm):
 
     process = MagicMock()
@@ -125,6 +131,7 @@ async def test_start(vm):
         assert event == vm
 
 
+@pytest.mark.asyncio
 async def test_start_0_6_1(vm):
     """
     Version 0.6.1 doesn't have the -R options. It's not require
@@ -157,6 +164,7 @@ async def test_start_0_6_1(vm):
                 assert vm.is_running()
 
 
+@pytest.mark.asyncio
 async def test_stop(vm):
 
     process = MagicMock()
@@ -180,10 +188,7 @@ async def test_stop(vm):
                         await vm.stop()
                     assert vm.is_running() is False
 
-                    if sys.platform.startswith("win"):
-                        process.send_signal.assert_called_with(1)
-                    else:
-                        process.terminate.assert_called_with()
+                    process.terminate.assert_called_with()
 
                     await queue.get(1)  #  Ping
                     await queue.get(1)  #  Started
@@ -193,6 +198,7 @@ async def test_stop(vm):
                     assert event == vm
 
 
+@pytest.mark.asyncio
 async def test_reload(vm):
 
     process = MagicMock()
@@ -215,12 +221,10 @@ async def test_reload(vm):
                     await vm.reload()
                 assert vm.is_running() is True
 
-                if sys.platform.startswith("win"):
-                    process.send_signal.assert_called_with(1)
-                else:
-                    process.terminate.assert_called_with()
+                process.terminate.assert_called_with()
 
 
+@pytest.mark.asyncio
 async def test_add_nio_binding_udp(vm):
 
     nio = VPCS.instance().create_nio({"type": "nio_udp", "lport": 4242, "rport": 4243, "rhost": "127.0.0.1", "filters": {}})
@@ -228,7 +232,7 @@ async def test_add_nio_binding_udp(vm):
     assert nio.lport == 4242
 
 
-@pytest.mark.skipif(sys.platform.startswith("win"), reason="Not supported on Windows")
+@pytest.mark.asyncio
 async def test_add_nio_binding_tap(vm, ethernet_device):
 
     with patch("gns3server.compute.base_manager.BaseManager.has_privileged_access", return_value=True):
@@ -237,6 +241,7 @@ async def test_add_nio_binding_tap(vm, ethernet_device):
         assert nio.tap_device == ethernet_device
 
 
+@pytest.mark.asyncio
 async def test_port_remove_nio_binding(vm):
 
     nio = VPCS.instance().create_nio({"type": "nio_udp", "lport": 4242, "rport": 4243, "rhost": "127.0.0.1"})
@@ -312,6 +317,7 @@ def test_change_name(vm):
         assert f.read() == "set pcname beta"
 
 
+@pytest.mark.asyncio
 async def test_close(vm):
 
     with asyncio_patch("gns3server.compute.vpcs.vpcs_vm.VPCSVM._check_requirements", return_value=True):

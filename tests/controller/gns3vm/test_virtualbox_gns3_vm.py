@@ -16,22 +16,23 @@
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 import pytest
+import pytest_asyncio
 
-from tests.utils import asyncio_patch, AsyncioMagicMock
+from tests.utils import asyncio_patch
 from gns3server.utils.asyncio import wait_run_in_executor
-from unittest.mock import patch
 
 from gns3server.controller.gns3vm.virtualbox_gns3_vm import VirtualBoxGNS3VM
 
 
-@pytest.fixture
-async def gns3vm(loop, controller):
+@pytest_asyncio.fixture
+async def gns3vm(controller):
 
     vm = VirtualBoxGNS3VM(controller)
     vm.vmname = "GNS3 VM"
     return vm
 
 
+@pytest.mark.asyncio
 async def test_look_for_interface(gns3vm):
 
     showvminfo = """
@@ -56,9 +57,8 @@ GuestMemoryBalloon=0
 
     with asyncio_patch("gns3server.controller.gns3vm.virtualbox_gns3_vm.VirtualBoxGNS3VM._execute", return_value=showvminfo) as mock:
         res = await gns3vm._look_for_interface("nat")
-
-    mock.assert_called_with('showvminfo', ['GNS3 VM', '--machinereadable'])
-    assert res == 2
+        mock.assert_called_with('showvminfo', ['GNS3 VM', '--machinereadable'])
+        assert res == 2
 
     # with asyncio_patch("gns3server.controller.gns3vm.virtualbox_gns3_vm.VirtualBoxGNS3VM._execute") as mock:
     #     mock.side_effect = execute_mock
@@ -67,6 +67,7 @@ GuestMemoryBalloon=0
     # assert res == -1
 
 
+@pytest.mark.asyncio
 async def test_cpu_vendor_id(gns3vm):
 
     from cpuinfo import get_cpu_info

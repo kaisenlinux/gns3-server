@@ -24,8 +24,9 @@ from gns3server.compute.builtin.nodes.nat import Nat
 def test_json_gns3vm(on_gns3vm, compute_project):
 
     nat = Nat("nat1", str(uuid.uuid4()), compute_project, MagicMock())
-    assert nat.__json__() == {
+    assert nat.asdict() == {
         "name": "nat1",
+        "usage": "",
         "node_id": nat.id,
         "project_id": compute_project.id,
         "status": "started",
@@ -46,8 +47,9 @@ def test_json_darwin(darwin_platform, compute_project):
             {"name": "eth0", "special": False, "type": "ethernet"},
             {"name": "vmnet8", "special": True, "type": "ethernet"}]):
         nat = Nat("nat1", str(uuid.uuid4()), compute_project, MagicMock())
-    assert nat.__json__() == {
+    assert nat.asdict() == {
         "name": "nat1",
+        "usage": "",
         "node_id": nat.id,
         "project_id": compute_project.id,
         "status": "started",
@@ -66,8 +68,9 @@ def test_json_windows_with_full_name_of_interface(windows_platform, project):
     with patch("gns3server.utils.interfaces.interfaces", return_value=[
             {"name": "VMware Network Adapter VMnet8", "special": True, "type": "ethernet"}]):
         nat = Nat("nat1", str(uuid.uuid4()), project, MagicMock())
-    assert nat.__json__() == {
+    assert nat.asdict() == {
         "name": "nat1",
+        "usage": "",
         "node_id": nat.id,
         "project_id": project.id,
         "status": "started",

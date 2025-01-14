@@ -1,0 +1,13 @@
+Author: Kevin Chevreuil - Kaisen <kaisen@kaisenlinux.org>
+
+--- gns3-server-3.0.2.orig/gns3server/main.py
++++ gns3-server-3.0.2/gns3server/main.py
+@@ -30,7 +30,7 @@ import gns3server.utils.get_resource
+ import os
+ import sys
+ import asyncio
+-
++import trio
+ 
+ def daemonize():
+     """

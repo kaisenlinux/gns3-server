@@ -1,3 +1,15 @@
+gns3-server (3.0.2-1kaisen) kaisen-packages; urgency=medium
+
+  * Import the 3.0.2 release
+  * Update the control file to add new dependancies
+  * Update the quilt patch
+  * Add virtualbox-qt as dependancy
+  * Add python3:all as dependancy
+  * Add docker.io as dependancy
+  * Add the add-import-trio-to-fix-sendmsg quilt patch
+
+ -- Kevin Chevreuil - Kaisen <kaisen@kaisenlinux.org>  Tue, 14 Jan 2025 01:01:54 +0200
+
 gns3-server (2.2.46-1kaisen) kaisen-packages; urgency=medium
 
   * Import the 2.2.46 version

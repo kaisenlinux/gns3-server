@@ -1,5 +1,4 @@
 #!/usr/bin/env python
-# -*- coding: utf-8 -*-
 #
 # Copyright (C) 2015 GNS3 Technologies Inc.
 #
@@ -30,18 +29,7 @@ import gns3server.utils.get_resource
 
 import os
 import sys
-import types
-import multiprocessing
-
-# To avoid strange bug later we switch the event loop before any other operation
-if sys.platform.startswith("win"):
-    import asyncio
-    # use the Proactor event loop on Windows
-    loop = asyncio.ProactorEventLoop()
-    asyncio.set_event_loop(loop)
-
-if sys.platform.startswith("win"):
-    sys.modules['termios'] = types.ModuleType('termios')
+import asyncio
 
 
 def daemonize():
@@ -77,15 +65,17 @@ def main():
     Entry point for GNS3 server
     """
 
-    if not sys.platform.startswith("win"):
-        if "--daemon" in sys.argv:
-            daemonize()
-    else:
-        multiprocessing.freeze_support()
+    if sys.platform.startswith("win"):
+        raise SystemExit("Windows is not a supported platform to run the GNS3 server")
+    if "--daemon" in sys.argv:
+        daemonize()
+    from gns3server.server import Server
 
-    from gns3server.run import run
-    run()
+    try:
+        asyncio.run(Server().run())
+    except KeyboardInterrupt:
+        pass
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()
