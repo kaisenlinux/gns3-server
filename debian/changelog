@@ -1,3 +1,9 @@
+gns3-server (3.0.2-2kaisen) kaisen-packages; urgency=medium
+
+  * Fix bad dependancy
+
+ -- Kevin Chevreuil - Kaisen <kaisen@kaisenlinux.org>  Wed, 15 Jan 2025 15:11:26 +0200
+
 gns3-server (3.0.2-1kaisen) kaisen-packages; urgency=medium
 
   * Import the 3.0.2 release
